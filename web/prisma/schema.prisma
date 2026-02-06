@@ -8,28 +8,14 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "sqlite"
+  url      = "file:./dev.db"
 }
 
-// ===========================================
-// Enums
-// ===========================================
+// Enum equivalents for SQLite
+// UserRole: ADMIN, FACULTY, CLUB
+// CertificateStatus: ACTIVE, REVOKED, EXPIRED
 
-/// User roles for Role-Based Access Control (RBAC)
-enum UserRole {
-  ADMIN   // Full system access, user management, analytics
-  FACULTY // Issue certificates for academic programs
-  CLUB    // Issue certificates for club events/activities
-}
-
-/// Certificate lifecycle status
-enum CertificateStatus {
-  ACTIVE  // Valid and verifiable
-  REVOKED // Manually revoked by issuer
-  EXPIRED // Past expiration date
-}
 
 // ===========================================
 // Models
@@ -42,7 +28,7 @@ model User {
   email      String   @unique
   name       String
   password   String   // bcrypt hashed
-  role       UserRole @default(FACULTY)
+  role       String   @default("FACULTY") // ADMIN, FACULTY, CLUB
   department String?  // Optional department/club affiliation
 
   // Timestamps
@@ -71,7 +57,7 @@ model Certificate {
   expiresAt      DateTime?         // Optional expiration date
   dataHash       String            // SHA-256 hash of certificate data
   qrCodeData     String            // QR code payload (verification URL)
-  status         CertificateStatus @default(ACTIVE)
+  status         String            @default("ACTIVE") // ACTIVE, REVOKED, EXPIRED
 
   // Issuer relation
   issuerId String

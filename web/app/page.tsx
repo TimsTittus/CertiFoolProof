@@ -1,4 +1,4 @@
-import Image from "next/image";
+import Link from "next/link";
 
 export default function Home() {
   return (
@@ -7,48 +7,48 @@ export default function Home() {
         <h1 className="text-4xl sm:text-6xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
           CertiFoolProof
         </h1>
-        
+
         <p className="text-lg sm:text-xl text-gray-600 dark:text-gray-300 leading-relaxed">
-          A digital certificate verification platform that provides secure, efficient, and reliable 
-          authentication of academic and organizational certificates. CertiFoolProof streamlines 
+          A digital certificate verification platform that provides secure, efficient, and reliable
+          authentication of academic and organizational certificates. CertiFoolProof streamlines
           the verification process while maintaining the highest standards of security and authenticity.
         </p>
 
         <div className="flex gap-4 items-center flex-col sm:flex-row mt-8">
-          <a
+          <Link
             className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white gap-2 text-sm sm:text-base h-10 sm:h-12 px-6 sm:px-8"
-            href="/get-started"
+            href="/login"
           >
             Get Started
-          </a>
-          <a
+          </Link>
+          <Link
             className="rounded-full border border-solid border-blue-600 transition-colors flex items-center justify-center hover:bg-blue-50 dark:hover:bg-blue-900/20 text-sm sm:text-base h-10 sm:h-12 px-6 sm:px-8"
-            href="/learn-more"
+            href="/#features"
           >
             Learn More
-          </a>
+          </Link>
         </div>
       </main>
-      
+
       <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center text-sm text-gray-600 dark:text-gray-400">
-        <a
+        <Link
           className="hover:text-blue-600 transition-colors"
-          href="/about"
+          href="/#about"
         >
           About
-        </a>
-        <a
+        </Link>
+        <Link
           className="hover:text-blue-600 transition-colors"
-          href="/contact"
+          href="/#contact"
         >
           Contact
-        </a>
-        <a
+        </Link>
+        <Link
           className="hover:text-blue-600 transition-colors"
-          href="/docs"
+          href="/#docs"
         >
           Documentation
-        </a>
+        </Link>
       </footer>
     </div>
   );
