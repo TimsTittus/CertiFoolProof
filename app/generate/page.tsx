@@ -1,14 +1,13 @@
 "use client"
 
 import { useState } from "react"
-import { useRouter } from "next/navigation"
 import Link from "next/link"
+import Image from "next/image"
 import { createCertificate, CreateCertificateResult } from "@/app/actions/certificate"
 
 type FormState = "form" | "loading" | "success"
 
 export default function GeneratePage() {
-    const router = useRouter()
     const [formState, setFormState] = useState<FormState>("form")
     const [error, setError] = useState("")
     const [result, setResult] = useState<CreateCertificateResult["certificate"] | null>(null)
@@ -114,7 +113,7 @@ export default function GeneratePage() {
                         <div className="mb-6">
                             <p className="text-gray-400 text-sm mb-3">Scan to verify</p>
                             <div className="inline-block p-4 bg-white rounded-lg">
-                                <img src={result.qrCodeDataUrl} alt="Certificate QR Code" className="w-48 h-48" />
+                                <Image src={result.qrCodeDataUrl} alt="Certificate QR Code" width={192} height={192} />
                             </div>
                             <p className="text-gray-500 text-xs mt-2 font-mono">{result.verificationUrl}</p>
                         </div>
