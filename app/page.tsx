@@ -51,7 +51,7 @@ export default function Home() {
 
           <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 items-center justify-center">
             <Link
-              href="/login"
+              href="/signup"
               className="w-full sm:w-auto px-6 sm:px-8 py-3 sm:py-3.5 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-white font-medium hover:from-blue-700 hover:to-purple-700 transition-all text-sm sm:text-base text-center shadow-lg shadow-blue-600/25"
             >
               Get Started →
@@ -188,14 +188,14 @@ export default function Home() {
         <div className="max-w-3xl mx-auto text-center">
           <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-white mb-3 sm:mb-4">Ready to get started?</h2>
           <p className="text-gray-400 text-sm sm:text-base mb-6 sm:mb-8">
-            Sign in to issue your first tamper-proof certificate.
+            Create an account to issue your first tamper-proof certificate.
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
             <Link
-              href="/login"
+              href="/signup"
               className="px-6 sm:px-8 py-3 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-white font-medium hover:from-blue-700 hover:to-purple-700 transition-all text-sm sm:text-base shadow-lg shadow-blue-600/25"
             >
-              Sign In
+              Create Account
             </Link>
             <Link
               href="/verify"

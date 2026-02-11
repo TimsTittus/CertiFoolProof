@@ -2,8 +2,8 @@ import { auth } from "@/auth"
 import { NextResponse } from "next/server"
 import type { NextRequest } from "next/server"
 
-const publicRoutes = ["/", "/login", "/verify"]
-const authRoutes = ["/login"]
+const publicRoutes = ["/", "/login", "/signup", "/verify"]
+const authRoutes = ["/login", "/signup"]
 
 // Role-based route protection
 const roleRoutes: Record<string, string[]> = {

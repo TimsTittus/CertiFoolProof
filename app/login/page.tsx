@@ -110,42 +110,13 @@ function LoginForm() {
                 </button>
             </form>
 
-            {/* Demo credentials */}
-            <div className="mt-6 sm:mt-8 pt-4 sm:pt-6 border-t border-white/10">
-                <p className="text-[10px] sm:text-xs text-center text-gray-400 mb-2.5 sm:mb-3">Demo Credentials</p>
-                <div className="grid grid-cols-3 gap-1.5 sm:gap-2 text-xs">
-                    <button
-                        type="button"
-                        onClick={() => {
-                            setEmail("admin@certifoolproof.com")
-                            setPassword("admin123")
-                        }}
-                        className="px-2 py-2 sm:py-1.5 rounded bg-white/5 hover:bg-white/10 active:bg-white/15 text-gray-300 transition-colors"
-                    >
-                        Admin
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => {
-                            setEmail("faculty@certifoolproof.com")
-                            setPassword("faculty123")
-                        }}
-                        className="px-2 py-2 sm:py-1.5 rounded bg-white/5 hover:bg-white/10 active:bg-white/15 text-gray-300 transition-colors"
-                    >
-                        Faculty
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => {
-                            setEmail("club@certifoolproof.com")
-                            setPassword("club123")
-                        }}
-                        className="px-2 py-2 sm:py-1.5 rounded bg-white/5 hover:bg-white/10 active:bg-white/15 text-gray-300 transition-colors"
-                    >
-                        Club
-                    </button>
-                </div>
-            </div>
+            {/* Signup link */}
+            <p className="mt-6 sm:mt-8 pt-4 sm:pt-6 border-t border-white/10 text-center text-xs sm:text-sm text-gray-400">
+                Don&apos;t have an account?{" "}
+                <Link href="/signup" className="text-purple-400 hover:text-purple-300 transition-colors font-medium">
+                    Sign Up
+                </Link>
+            </p>
         </div>
     )
 }
