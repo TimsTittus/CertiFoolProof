@@ -1,11 +1,14 @@
 import { auth } from "@/auth"
 import { redirect } from "next/navigation"
 import Link from "next/link"
+import { headers } from "next/headers"
 import { getAllCertificates } from "@/app/actions/admin"
 import { RevokeCertificateButton } from "./revoke-button"
 
 export default async function AdminCertificatesPage() {
-    const session = await auth()
+    const session = await auth.api.getSession({
+        headers: await headers()
+    })
     if (!session?.user || session.user.role !== "ADMIN") redirect("/dashboard?error=unauthorized")
 
     const certificates = await getAllCertificates()

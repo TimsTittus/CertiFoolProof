@@ -1,7 +1,10 @@
 "use server"
 
 import { auth } from "@/auth"
-import { prisma } from "@/lib/prisma"
+import { headers } from "next/headers"
+import { db } from "@/db"
+import { user as userTable, certificate as certificateTable, verificationLog as verificationLogTable } from "@/db/schema"
+import { count, eq, gte, desc } from "drizzle-orm"
 
 export interface DashboardStats {
     totalUsers: number
@@ -31,7 +34,9 @@ export interface DashboardStats {
 }
 
 async function requireAdmin() {
-    const session = await auth()
+    const session = await auth.api.getSession({
+        headers: await headers()
+    })
     if (!session?.user || session.user.role !== "ADMIN") {
         throw new Error("Unauthorized")
     }
@@ -39,130 +44,171 @@ async function requireAdmin() {
 }
 
 export async function getAdminDashboardStats(): Promise<DashboardStats> {
-    await requireAdmin()
+    try {
+        await requireAdmin()
 
-    const [
-        totalUsers,
-        totalCertificates,
-        activeCertificates,
-        revokedCertificates,
-        totalVerifications,
-        recentVerifications,
-        usersByRole,
-        recentCertificates,
-        recentLogs,
-    ] = await Promise.all([
-        prisma.user.count(),
-        prisma.certificate.count(),
-        prisma.certificate.count({ where: { status: "ACTIVE" } }),
-        prisma.certificate.count({ where: { status: "REVOKED" } }),
-        prisma.verificationLog.count(),
-        prisma.verificationLog.count({
-            where: {
-                verifiedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
-            },
-        }),
-        prisma.user.groupBy({
-            by: ["role"],
-            _count: { role: true },
-        }),
-        prisma.certificate.findMany({
-            take: 10,
-            orderBy: { createdAt: "desc" },
-            include: { issuer: { select: { name: true } } },
-        }),
-        prisma.verificationLog.findMany({
-            take: 15,
-            orderBy: { verifiedAt: "desc" },
-        }),
-    ])
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
 
-    // Certificates by month (last 6 months)
-    const sixMonthsAgo = new Date()
-    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6)
+        const [
+            totalUsersRes,
+            totalCertificatesRes,
+            activeCertificatesRes,
+            revokedCertificatesRes,
+            totalVerificationsRes,
+            recentVerificationsRes,
+            usersByRoleRes,
+            recentCertificates,
+            recentLogs,
+        ] = await Promise.all([
+            db.select({ count: count() }).from(userTable),
+            db.select({ count: count() }).from(certificateTable),
+            db.select({ count: count() }).from(certificateTable).where(eq(certificateTable.status, "ACTIVE")),
+            db.select({ count: count() }).from(certificateTable).where(eq(certificateTable.status, "REVOKED")),
+            db.select({ count: count() }).from(verificationLogTable),
+            db.select({ count: count() }).from(verificationLogTable).where(gte(verificationLogTable.verifiedAt, sevenDaysAgo)),
+            db.select({ role: userTable.role, count: count() }).from(userTable).groupBy(userTable.role),
+            db.query.certificate.findMany({
+                limit: 10,
+                orderBy: [desc(certificateTable.createdAt)],
+                with: { issuer: { columns: { name: true } } },
+            }),
+            db.query.verificationLog.findMany({
+                limit: 15,
+                orderBy: [desc(verificationLogTable.verifiedAt)],
+            }),
+        ])
 
-    const certsByMonth = await prisma.certificate.findMany({
-        where: { createdAt: { gte: sixMonthsAgo } },
-        select: { createdAt: true },
-    })
+        const sixMonthsAgo = new Date()
+        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6)
 
-    const monthCounts: Record<string, number> = {}
-    for (let i = 5; i >= 0; i--) {
-        const d = new Date()
-        d.setMonth(d.getMonth() - i)
-        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
-        monthCounts[key] = 0
-    }
-    certsByMonth.forEach((c) => {
-        const key = `${c.createdAt.getFullYear()}-${String(c.createdAt.getMonth() + 1).padStart(2, "0")}`
-        if (key in monthCounts) monthCounts[key]++
-    })
+        const certsByMonth = await db.select({ createdAt: certificateTable.createdAt })
+            .from(certificateTable)
+            .where(gte(certificateTable.createdAt, sixMonthsAgo))
 
-    return {
-        totalUsers,
-        totalCertificates,
-        activeCertificates,
-        revokedCertificates,
-        totalVerifications,
-        recentVerifications,
-        usersByRole: usersByRole.map((r) => ({ role: r.role, count: r._count.role })),
-        certificatesByMonth: Object.entries(monthCounts).map(([month, count]) => ({ month, count })),
-        recentCertificates: recentCertificates.map((c) => ({
-            id: c.id,
-            certificateId: c.certificateId,
-            recipientName: c.recipientName,
-            title: c.title,
-            status: c.status,
-            issuedAt: c.issuedAt,
-            issuerName: c.issuer.name,
-        })),
-        recentLogs: recentLogs.map((l) => ({
-            id: l.id,
-            certificateId: l.certificateId,
-            verifiedAt: l.verifiedAt,
-            success: l.success,
-            ipAddress: l.ipAddress,
-        })),
+        const monthCounts: Record<string, number> = {}
+        for (let i = 5; i >= 0; i--) {
+            const d = new Date()
+            d.setMonth(d.getMonth() - i)
+            const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+            monthCounts[key] = 0
+        }
+        certsByMonth.forEach((c) => {
+            const key = `${c.createdAt.getFullYear()}-${String(c.createdAt.getMonth() + 1).padStart(2, "0")}`
+            if (key in monthCounts) monthCounts[key]++
+        })
+
+        return {
+            totalUsers: totalUsersRes[0].count,
+            totalCertificates: totalCertificatesRes[0].count,
+            activeCertificates: activeCertificatesRes[0].count,
+            revokedCertificates: revokedCertificatesRes[0].count,
+            totalVerifications: totalVerificationsRes[0].count,
+            recentVerifications: recentVerificationsRes[0].count,
+            usersByRole: usersByRoleRes.map((r) => ({ role: r.role, count: r.count })),
+            certificatesByMonth: Object.entries(monthCounts).map(([month, count]) => ({ month, count })),
+            recentCertificates: recentCertificates.map((c) => ({
+                id: c.id,
+                certificateId: c.certificateId,
+                recipientName: c.recipientName,
+                title: c.title,
+                status: c.status,
+                issuedAt: c.issuedAt,
+                issuerName: c.issuer.name,
+            })),
+            recentLogs: recentLogs.map((l) => ({
+                id: l.id,
+                certificateId: l.certificateId,
+                verifiedAt: l.verifiedAt,
+                success: l.success,
+                ipAddress: l.ipAddress,
+            })),
+        }
+    } catch (error) {
+        console.error("[ADMIN] Failed to fetch dashboard stats:", error)
+        return {
+            totalUsers: 0,
+            totalCertificates: 0,
+            activeCertificates: 0,
+            revokedCertificates: 0,
+            totalVerifications: 0,
+            recentVerifications: 0,
+            usersByRole: [],
+            certificatesByMonth: [],
+            recentCertificates: [],
+            recentLogs: [],
+        }
     }
 }
 
 export async function getAllUsers() {
-    await requireAdmin()
-    return prisma.user.findMany({
-        orderBy: { createdAt: "desc" },
-        select: {
-            id: true,
-            email: true,
-            name: true,
-            role: true,
-            department: true,
-            createdAt: true,
-            _count: { select: { certificates: true } },
-        },
-    })
+    try {
+        await requireAdmin()
+
+        const users = await db.query.user.findMany({
+            orderBy: [desc(userTable.createdAt)],
+            columns: {
+                id: true,
+                email: true,
+                name: true,
+                role: true,
+                department: true,
+                createdAt: true,
+            },
+            with: {
+                certificates: {
+                    columns: {
+                        id: true
+                    }
+                }
+            }
+        })
+
+        return users.map(u => ({
+            ...u,
+            _count: { certificates: u.certificates.length }
+        }))
+    } catch (error) {
+        console.error("[ADMIN] Failed to fetch all users:", error)
+        return []
+    }
 }
 
 export async function getAllCertificates() {
-    await requireAdmin()
-    return prisma.certificate.findMany({
-        orderBy: { createdAt: "desc" },
-        take: 100,
-        include: { issuer: { select: { name: true, email: true } } },
-    })
+    try {
+        await requireAdmin()
+        return await db.query.certificate.findMany({
+            orderBy: [desc(certificateTable.createdAt)],
+            limit: 100,
+            with: { issuer: { columns: { name: true, email: true } } },
+        })
+    } catch (error) {
+        console.error("[ADMIN] Failed to fetch all certificates:", error)
+        return []
+    }
 }
 
 export async function getVerificationLogs() {
-    await requireAdmin()
-    return prisma.verificationLog.findMany({
-        orderBy: { verifiedAt: "desc" },
-        take: 100,
-    })
+    try {
+        await requireAdmin()
+        return await db.query.verificationLog.findMany({
+            orderBy: [desc(verificationLogTable.verifiedAt)],
+            limit: 100,
+        })
+    } catch (error) {
+        console.error("[ADMIN] Failed to fetch verification logs:", error)
+        return []
+    }
 }
 
 export async function revokeCertificate(certificateId: string) {
-    await requireAdmin()
-    return prisma.certificate.update({
-        where: { id: certificateId },
-        data: { status: "REVOKED" },
-    })
+    try {
+        await requireAdmin()
+        return await db.update(certificateTable)
+            .set({ status: "REVOKED" })
+            .where(eq(certificateTable.id, certificateId))
+            .returning()
+    } catch (error) {
+        console.error("[ADMIN] Failed to revoke certificate:", error)
+        throw new Error("Failed to revoke certificate. Database may be unreachable.")
+    }
 }

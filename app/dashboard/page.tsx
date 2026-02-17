@@ -1,10 +1,14 @@
-import { auth, signOut } from "@/auth"
+import { auth } from "@/auth"
 import { redirect } from "next/navigation"
+import { headers } from "next/headers"
 import Link from "next/link"
 import { MobileNav } from "./mobile-nav"
+import { logout } from "@/app/actions/auth-actions"
 
 export default async function DashboardPage() {
-    const session = await auth()
+    const session = await auth.api.getSession({
+        headers: await headers()
+    })
 
     if (!session?.user) {
         redirect("/login")
@@ -53,10 +57,7 @@ export default async function DashboardPage() {
                                 </Link>
                             ))}
                             <form
-                                action={async () => {
-                                    "use server"
-                                    await signOut({ redirectTo: "/" })
-                                }}
+                                action={logout}
                             >
                                 <button
                                     type="submit"
@@ -70,10 +71,7 @@ export default async function DashboardPage() {
                         {/* Mobile Hamburger */}
                         <MobileNav
                             links={navLinks}
-                            signOutAction={async () => {
-                                "use server"
-                                await signOut({ redirectTo: "/" })
-                            }}
+                            signOutAction={logout}
                         />
                     </div>
                 </div>

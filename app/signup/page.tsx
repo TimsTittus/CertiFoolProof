@@ -3,7 +3,7 @@
 import { useState, Suspense } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { signupUser } from "@/app/actions/auth"
+import { signupUser } from "@/app/actions/auth-actions"
 import { UserRole } from "@/lib/enums"
 
 function SignupForm() {
@@ -14,6 +14,7 @@ function SignupForm() {
     const [password, setPassword] = useState("")
     const [role, setRole] = useState<UserRole>(UserRole.FACULTY)
     const [rolePassword, setRolePassword] = useState("")
+    const [phone, setPhone] = useState("")
     const [error, setError] = useState("")
     const [success, setSuccess] = useState(false)
     const [isLoading, setIsLoading] = useState(false)
@@ -24,7 +25,8 @@ function SignupForm() {
         setError("")
         setSuccess(false)
 
-        const result = await signupUser({ name, email, password, role, rolePassword })
+        const result = await signupUser({ name, email, password, role, rolePassword, phone })
+
 
         if (!result.success) {
             setError(result.error || "Signup failed")
@@ -119,7 +121,24 @@ function SignupForm() {
                     />
                 </div>
 
+                {/* Phone */}
+                <div>
+                    <label htmlFor="phone" className="block text-xs sm:text-sm font-medium text-gray-200 mb-1.5">
+                        Phone Number
+                    </label>
+                    <input
+                        id="phone"
+                        type="tel"
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        required
+                        className="w-full px-3.5 sm:px-4 py-2.5 sm:py-3 rounded-lg bg-white/5 border border-white/10 text-white text-sm sm:text-base placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-200 appearance-none"
+                        placeholder="+91 9876543210"
+                    />
+                </div>
+
                 {/* Role Selector */}
+
                 <div>
                     <label className="block text-xs sm:text-sm font-medium text-gray-200 mb-1.5">
                         Role

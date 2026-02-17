@@ -1,8 +1,10 @@
 "use server"
 
-import { prisma } from "@/lib/prisma"
+import { db } from "@/db"
+import { certificate as certificateTable, verificationLog as verificationLogTable } from "@/db/schema"
 import { verifyCertificateHash, isValidCertificateId } from "@/lib/certificate"
 import { headers } from "next/headers"
+import { eq, sql } from "drizzle-orm"
 
 export interface VerificationResult {
     success: boolean
@@ -35,11 +37,11 @@ export async function verifyCertificate(
             return { success: false, valid: false, error: "Invalid certificate ID format" }
         }
 
-        const certificate = await prisma.certificate.findUnique({
-            where: { certificateId },
-            include: {
+        const certificate = await db.query.certificate.findFirst({
+            where: eq(certificateTable.certificateId, certificateId),
+            with: {
                 issuer: {
-                    select: {
+                    columns: {
                         name: true,
                         department: true,
                     },
@@ -72,23 +74,23 @@ export async function verifyCertificate(
         const ipAddress = headersList.get("x-forwarded-for") || headersList.get("x-real-ip") || null
         const userAgent = headersList.get("user-agent") || null
 
-        await prisma.$transaction([
-            prisma.certificate.update({
-                where: { id: certificate.id },
-                data: {
-                    verificationCount: { increment: 1 },
+        await db.transaction(async (tx) => {
+            await tx
+                .update(certificateTable)
+                .set({
+                    verificationCount: sql`${certificateTable.verificationCount} + 1`,
                     lastVerifiedAt: new Date(),
-                },
-            }),
-            prisma.verificationLog.create({
-                data: {
-                    certificateId: certificate.certificateId,
-                    ipAddress,
-                    userAgent,
-                    success: isHashValid && isActive,
-                },
-            }),
-        ])
+                })
+                .where(eq(certificateTable.id, certificate.id))
+
+            await tx.insert(verificationLogTable).values({
+                id: crypto.randomUUID(),
+                certificateId: certificate.certificateId,
+                ipAddress,
+                userAgent,
+                success: isHashValid && isActive,
+            })
+        })
 
         return {
             success: true,

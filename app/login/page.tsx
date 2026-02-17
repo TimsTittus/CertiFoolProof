@@ -1,9 +1,10 @@
 "use client"
 
 import { useState, Suspense } from "react"
-import { signIn } from "next-auth/react"
 import { useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
+import { authClient } from "@/lib/auth-client"
+
 
 function LoginForm() {
     const router = useRouter()
@@ -21,25 +22,28 @@ function LoginForm() {
         setError("")
 
         try {
-            const result = await signIn("credentials", {
-                email,
+            const { error: signInError } = await authClient.signIn.email({
+                email: email.trim().toLowerCase(),
                 password,
-                redirect: false,
+                callbackURL: callbackUrl,
             })
 
-            if (result?.error) {
-                setError("Invalid email or password")
+            if (signInError) {
+                setError(signInError.message || "Invalid email or password")
                 setIsLoading(false)
                 return
             }
 
+            // Redirect is handled by callbackURL usually, but let's be sure
             router.push(callbackUrl)
             router.refresh()
-        } catch {
-            setError("An unexpected error occurred")
+        } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : "An unexpected error occurred"
+            setError(message)
             setIsLoading(false)
         }
     }
+
 
     return (
         <div className="backdrop-blur-xl bg-white/10 rounded-xl sm:rounded-2xl shadow-2xl border border-white/20 p-5 sm:p-8">

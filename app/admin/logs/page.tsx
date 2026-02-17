@@ -1,10 +1,13 @@
 import { auth } from "@/auth"
 import { redirect } from "next/navigation"
 import Link from "next/link"
+import { headers } from "next/headers"
 import { getVerificationLogs } from "@/app/actions/admin"
 
 export default async function AdminLogsPage() {
-    const session = await auth()
+    const session = await auth.api.getSession({
+        headers: await headers()
+    })
     if (!session?.user || session.user.role !== "ADMIN") redirect("/dashboard?error=unauthorized")
 
     const logs = await getVerificationLogs()

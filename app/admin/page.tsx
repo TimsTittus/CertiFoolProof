@@ -1,10 +1,14 @@
-import { auth, signOut } from "@/auth"
+import { auth } from "@/auth"
+import { headers } from "next/headers"
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import { getAdminDashboardStats } from "@/app/actions/admin"
+import { logout } from "@/app/actions/auth-actions"
 
 export default async function AdminPage() {
-    const session = await auth()
+    const session = await auth.api.getSession({
+        headers: await headers()
+    })
 
     if (!session?.user || session.user.role !== "ADMIN") {
         redirect("/dashboard?error=unauthorized")
@@ -24,7 +28,7 @@ export default async function AdminPage() {
                             <Link href="/dashboard" className="text-gray-300 hover:text-white transition-colors text-sm">Dashboard</Link>
                             <Link href="/generate" className="text-gray-300 hover:text-white transition-colors text-sm">Generate</Link>
                             <Link href="/admin" className="text-white font-medium text-sm">Admin</Link>
-                            <form action={async () => { "use server"; await signOut({ redirectTo: "/" }) }}>
+                            <form action={logout}>
                                 <button type="submit" className="px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-gray-200 text-sm transition-colors">Sign Out</button>
                             </form>
                         </div>
@@ -154,8 +158,8 @@ export default async function AdminPage() {
                                             <p className="text-gray-500 text-xs">{c.title} · by {c.issuerName}</p>
                                         </div>
                                         <span className={`px-2 py-0.5 rounded-full text-xs border ${c.status === "ACTIVE" ? "bg-green-500/20 text-green-300 border-green-500/30" :
-                                                c.status === "REVOKED" ? "bg-red-500/20 text-red-300 border-red-500/30" :
-                                                    "bg-gray-500/20 text-gray-300 border-gray-500/30"
+                                            c.status === "REVOKED" ? "bg-red-500/20 text-red-300 border-red-500/30" :
+                                                "bg-gray-500/20 text-gray-300 border-gray-500/30"
                                             }`}>{c.status}</span>
                                     </div>
                                 ))}

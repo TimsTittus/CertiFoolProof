@@ -1,10 +1,13 @@
 import { auth } from "@/auth"
 import { redirect } from "next/navigation"
 import Link from "next/link"
+import { headers } from "next/headers"
 import { getMyIssuedCertificates } from "@/app/actions/certificate"
 
 export default async function MyCertificatesPage() {
-    const session = await auth()
+    const session = await auth.api.getSession({
+        headers: await headers()
+    })
 
     if (!session?.user) {
         redirect("/login")

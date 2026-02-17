@@ -1,7 +1,9 @@
 "use server"
 
 import { auth } from "@/auth"
-import { prisma } from "@/lib/prisma"
+import { headers } from "next/headers"
+import { db } from "@/db"
+import { certificate as certificateTable } from "@/db/schema"
 import {
     generateCertificateId,
     hashCertificateData,
@@ -9,6 +11,7 @@ import {
     buildVerificationUrl,
 } from "@/lib/certificate"
 import { revalidatePath } from "next/cache"
+import { desc, eq } from "drizzle-orm"
 
 export interface CreateCertificateInput {
     recipientName: string
@@ -40,7 +43,9 @@ export async function createCertificate(
 ): Promise<CreateCertificateResult> {
     try {
         // Verify authentication
-        const session = await auth()
+        const session = await auth.api.getSession({
+            headers: await headers()
+        })
         if (!session?.user) {
             return { success: false, error: "Not authenticated" }
         }
@@ -90,21 +95,20 @@ export async function createCertificate(
         const verificationUrl = buildVerificationUrl(certificateId)
 
         // Store in database
-        const certificate = await prisma.certificate.create({
-            data: {
-                certificateId,
-                recipientName: input.recipientName.trim(),
-                recipientEmail: input.recipientEmail.trim().toLowerCase(),
-                title: input.title.trim(),
-                description: input.description?.trim() || null,
-                issuedAt,
-                expiresAt,
-                dataHash,
-                qrCodeData: verificationUrl,
-                status: "ACTIVE",
-                issuerId: session.user.id,
-            },
-        })
+        const [certificate] = await db.insert(certificateTable).values({
+            id: crypto.randomUUID(),
+            certificateId,
+            recipientName: input.recipientName.trim(),
+            recipientEmail: input.recipientEmail.trim().toLowerCase(),
+            title: input.title.trim(),
+            description: input.description?.trim() || null,
+            issuedAt,
+            expiresAt,
+            dataHash,
+            qrCodeData: verificationUrl,
+            status: "ACTIVE",
+            issuerId: session.user.id,
+        }).returning()
 
         // Revalidate the dashboard
         revalidatePath("/dashboard")
@@ -132,16 +136,23 @@ export async function createCertificate(
 }
 
 export async function getMyIssuedCertificates() {
-    const session = await auth()
-    if (!session?.user) {
+    try {
+        const session = await auth.api.getSession({
+            headers: await headers()
+        })
+        if (!session?.user) {
+            return []
+        }
+
+        const certificates = await db.query.certificate.findMany({
+            where: eq(certificateTable.issuerId, session.user.id),
+            orderBy: [desc(certificateTable.createdAt)],
+            limit: 50,
+        })
+
+        return certificates
+    } catch (error) {
+        console.error("Failed to fetch issued certificates:", error)
         return []
     }
-
-    const certificates = await prisma.certificate.findMany({
-        where: { issuerId: session.user.id },
-        orderBy: { createdAt: "desc" },
-        take: 50,
-    })
-
-    return certificates
 }
