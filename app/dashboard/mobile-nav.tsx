@@ -17,33 +17,33 @@ export function MobileNav({ links, signOutAction }: MobileNavProps) {
             <button
                 type="button"
                 onClick={() => setOpen((v) => !v)}
-                className="sm:hidden p-2 -mr-2 rounded-lg text-gray-300 hover:text-white hover:bg-white/10 active:bg-white/20 transition-colors"
+                className="sm:hidden p-2 border-3 border-black bg-white shadow-neo active:translate-x-1 active:translate-y-1 active:shadow-none transition-all"
                 aria-label="Toggle navigation menu"
                 aria-expanded={open}
             >
                 {open ? (
                     /* X icon */
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    <svg className="w-6 h-6 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" />
                     </svg>
                 ) : (
                     /* Hamburger icon */
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                    <svg className="w-6 h-6 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 6h16M4 12h16M4 18h16" />
                     </svg>
                 )}
             </button>
 
             {/* Mobile dropdown */}
             {open && (
-                <div className="sm:hidden absolute top-full left-0 right-0 border-b border-white/10 bg-slate-900/95 backdrop-blur-xl animate-in slide-in-from-top-2 duration-200 z-50">
-                    <div className="px-4 py-3 space-y-1">
+                <div className="sm:hidden absolute top-full left-0 right-0 border-3 border-black bg-white shadow-neo-lg z-50 mt-2 mx-4 animate-in slide-in-from-top-2 duration-200">
+                    <div className="p-4 space-y-2">
                         {links.map((link) => (
                             <Link
                                 key={link.href}
                                 href={link.href}
                                 onClick={() => setOpen(false)}
-                                className="block px-3 py-2.5 rounded-lg text-gray-300 hover:text-white hover:bg-white/10 active:bg-white/15 transition-colors text-sm font-medium"
+                                className="block px-4 py-3 border-3 border-black bg-neo-yellow text-black font-black uppercase text-sm shadow-neo hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all"
                             >
                                 {link.label}
                             </Link>
@@ -51,9 +51,9 @@ export function MobileNav({ links, signOutAction }: MobileNavProps) {
                         <form action={signOutAction}>
                             <button
                                 type="submit"
-                                className="w-full text-left px-3 py-2.5 rounded-lg text-gray-300 hover:text-white hover:bg-white/10 active:bg-white/15 transition-colors text-sm font-medium"
+                                className="w-full text-left px-4 py-3 border-3 border-black bg-neo-pink text-black font-black uppercase text-sm shadow-neo hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all"
                             >
-                                Sign Out
+                                Log Out
                             </button>
                         </form>
                     </div>

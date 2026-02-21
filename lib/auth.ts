@@ -11,6 +11,7 @@ export const auth = betterAuth({
     },
     session: {
         expiresIn: 3600,
+        strategy: "jwt",
     },
     user: {
         additionalFields: {
