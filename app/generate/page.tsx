@@ -53,19 +53,22 @@ export default function GeneratePage() {
     }
 
     return (
-        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+        <div className="min-h-screen min-h-[100dvh] bg-neo-mint text-black font-mono">
             {/* Navigation */}
-            <nav className="border-b border-white/10 backdrop-blur-lg bg-white/5">
+            <nav className="border-b-3 border-black bg-white sticky top-0 z-50 shadow-neo">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                    <div className="flex items-center justify-between h-16">
-                        <Link href="/" className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+                    <div className="flex items-center justify-between h-14 sm:h-16">
+                        <Link
+                            href="/"
+                            className="text-xl sm:text-2xl font-black bg-black text-white px-3 py-1 border-3 border-black shadow-neo hover:shadow-neo-lg hover:-translate-x-1 hover:-translate-y-1 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all duration-100"
+                        >
                             CertiFoolProof
                         </Link>
-                        <div className="flex items-center gap-4">
-                            <Link href="/dashboard" className="text-gray-300 hover:text-white transition-colors text-sm">
+                        <div className="flex items-center gap-6">
+                            <Link href="/dashboard" className="text-black font-bold hover:underline decoration-3 underline-offset-4 text-sm uppercase tracking-wider">
                                 Dashboard
                             </Link>
-                            <Link href="/generate" className="text-white font-medium text-sm">
+                            <Link href="/generate" className="text-black font-bold underline decoration-3 underline-offset-4 text-sm uppercase tracking-wider">
                                 Generate
                             </Link>
                         </div>
@@ -76,59 +79,59 @@ export default function GeneratePage() {
             <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
                 {formState === "success" && result ? (
                     // Success View
-                    <div className="backdrop-blur-xl bg-white/5 rounded-xl border border-white/10 p-8 text-center">
-                        <div className="mb-6">
-                            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-green-500/20 flex items-center justify-center">
-                                <svg className="w-8 h-8 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    <div className="bg-neo-pink border-3 border-black p-8 shadow-neo">
+                        <div className="mb-6 border-b-3 border-black pb-6">
+                            <div className="w-16 h-16 mx-auto mb-4 bg-black flex items-center justify-center border-3 border-black shadow-neo">
+                                <svg className="w-10 h-10 text-neo-yellow" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" />
                                 </svg>
                             </div>
-                            <h1 className="text-2xl font-bold text-white mb-2">Certificate Created!</h1>
-                            <p className="text-gray-400">The certificate has been issued successfully.</p>
+                            <h1 className="text-3xl font-black text-black mb-2 uppercase italic">Certificate Created!</h1>
+                            <p className="text-black font-bold">The certificate has been issued successfully.</p>
                         </div>
 
                         {/* Certificate Details */}
-                        <div className="bg-white/5 rounded-lg p-6 mb-6 text-left">
-                            <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div className="bg-white border-3 border-black p-6 mb-8 shadow-neo">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                                 <div>
-                                    <p className="text-gray-400">Certificate ID</p>
-                                    <p className="text-white font-mono">{result.certificateId}</p>
+                                    <p className="text-xs font-black uppercase tracking-tighter text-black/60">Certificate ID</p>
+                                    <p className="text-black font-black text-lg break-all">{result.certificateId}</p>
                                 </div>
                                 <div>
-                                    <p className="text-gray-400">Recipient</p>
-                                    <p className="text-white">{result.recipientName}</p>
+                                    <p className="text-xs font-black uppercase tracking-tighter text-black/60">Recipient</p>
+                                    <p className="text-black font-black text-lg">{result.recipientName}</p>
                                 </div>
                                 <div>
-                                    <p className="text-gray-400">Title</p>
-                                    <p className="text-white">{result.title}</p>
+                                    <p className="text-xs font-black uppercase tracking-tighter text-black/60">Title</p>
+                                    <p className="text-black font-black text-lg">{result.title}</p>
                                 </div>
                                 <div>
-                                    <p className="text-gray-400">Issued</p>
-                                    <p className="text-white">{new Date(result.issuedAt).toLocaleDateString()}</p>
+                                    <p className="text-xs font-black uppercase tracking-tighter text-black/60">Issued On</p>
+                                    <p className="text-black font-black text-lg">{new Date(result.issuedAt).toLocaleDateString()}</p>
                                 </div>
                             </div>
                         </div>
 
                         {/* QR Code */}
-                        <div className="mb-6">
-                            <p className="text-gray-400 text-sm mb-3">Scan to verify</p>
-                            <div className="inline-block p-4 bg-white rounded-lg">
+                        <div className="mb-8 flex flex-col items-center">
+                            <p className="text-black font-black uppercase italic mb-4 underline decoration-3 underline-offset-4">Scan to verify</p>
+                            <div className="p-4 bg-white border-3 border-black shadow-neo">
                                 <Image src={result.qrCodeDataUrl} alt="Certificate QR Code" width={192} height={192} />
                             </div>
-                            <p className="text-gray-500 text-xs mt-2 font-mono">{result.verificationUrl}</p>
+                            <p className="text-black font-bold text-xs mt-4 truncate w-full max-w-md bg-white border-2 border-black p-2">{result.verificationUrl}</p>
                         </div>
 
                         {/* Actions */}
-                        <div className="flex gap-4 justify-center">
+                        <div className="flex flex-col sm:flex-row gap-4 justify-center">
                             <button
                                 onClick={handleReset}
-                                className="px-6 py-2 rounded-lg bg-gradient-to-r from-blue-600 to-purple-600 text-white font-medium hover:from-blue-700 hover:to-purple-700 transition-all"
+                                className="px-8 py-3 border-3 border-black bg-neo-yellow shadow-neo hover:shadow-none hover:translate-x-1 hover:translate-y-1 active:translate-x-[2px] active:translate-y-[2px] transition-all font-black uppercase italic"
                             >
                                 Issue Another
                             </button>
                             <Link
                                 href="/dashboard"
-                                className="px-6 py-2 rounded-lg border border-white/20 text-gray-300 hover:bg-white/5 transition-all"
+                                className="px-8 py-3 border-3 border-black bg-white shadow-neo hover:shadow-none hover:translate-x-1 hover:translate-y-1 active:translate-x-[2px] active:translate-y-[2px] transition-all font-black uppercase italic text-center"
                             >
                                 Back to Dashboard
                             </Link>
@@ -137,28 +140,32 @@ export default function GeneratePage() {
                 ) : (
                     // Form View
                     <>
-                        <div className="mb-8">
-                            <h1 className="text-3xl font-bold text-white mb-2">Issue Certificate</h1>
-                            <p className="text-gray-400">Create and issue a new verified certificate.</p>
+                        <div className="mb-8 border-3 border-black bg-neo-cream p-6 shadow-neo">
+                            <h1 className="text-3xl sm:text-4xl font-black text-black mb-2 uppercase italic">
+                                Issue Certificate
+                            </h1>
+                            <p className="text-black font-bold text-sm sm:text-base border-t-3 border-black pt-2">
+                                Create and issue a new verified certificate.
+                            </p>
                         </div>
 
-                        <div className="backdrop-blur-xl bg-white/5 rounded-xl border border-white/10 p-8">
+                        <div className="bg-white border-3 border-black p-6 sm:p-8 shadow-neo">
                             {error && (
-                                <div className="mb-6 p-4 rounded-lg bg-red-500/20 border border-red-500/30 text-red-200 text-sm">
-                                    {error}
+                                <div className="mb-6 p-4 border-3 border-black bg-red-500 text-white font-black uppercase text-sm shadow-neo">
+                                    Error: {error}
                                 </div>
                             )}
 
-                            <form onSubmit={handleSubmit} className="space-y-6">
+                            <form onSubmit={handleSubmit} className="space-y-8">
                                 {/* Recipient Information */}
-                                <div className="space-y-4">
-                                    <h2 className="text-lg font-semibold text-white border-b border-white/10 pb-2">
-                                        Recipient Information
+                                <div className="space-y-6">
+                                    <h2 className="text-xl font-black text-black uppercase italic underline decoration-4 underline-offset-4">
+                                        Recipient Details
                                     </h2>
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                         <div>
-                                            <label className="block text-sm font-medium text-gray-300 mb-2">
-                                                Recipient Name *
+                                            <label className="block text-xs font-black uppercase tracking-tighter text-black mb-2">
+                                                Full Name *
                                             </label>
                                             <input
                                                 type="text"
@@ -167,12 +174,12 @@ export default function GeneratePage() {
                                                 placeholder="John Doe"
                                                 required
                                                 disabled={formState === "loading"}
-                                                className="w-full px-4 py-3 rounded-lg bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all disabled:opacity-50"
+                                                className="w-full px-4 py-3 border-3 border-black bg-white text-black font-bold placeholder-black/30 focus:outline-none focus:bg-neo-yellow transition-all disabled:opacity-50"
                                             />
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-medium text-gray-300 mb-2">
-                                                Recipient Email *
+                                            <label className="block text-xs font-black uppercase tracking-tighter text-black mb-2">
+                                                Email Address *
                                             </label>
                                             <input
                                                 type="email"
@@ -181,19 +188,19 @@ export default function GeneratePage() {
                                                 placeholder="john@example.com"
                                                 required
                                                 disabled={formState === "loading"}
-                                                className="w-full px-4 py-3 rounded-lg bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all disabled:opacity-50"
+                                                className="w-full px-4 py-3 border-3 border-black bg-white text-black font-bold placeholder-black/30 focus:outline-none focus:bg-neo-yellow transition-all disabled:opacity-50"
                                             />
                                         </div>
                                     </div>
                                 </div>
 
                                 {/* Certificate Details */}
-                                <div className="space-y-4">
-                                    <h2 className="text-lg font-semibold text-white border-b border-white/10 pb-2">
-                                        Certificate Details
+                                <div className="space-y-6">
+                                    <h2 className="text-xl font-black text-black uppercase italic underline decoration-4 underline-offset-4">
+                                        Certificate Info
                                     </h2>
                                     <div>
-                                        <label className="block text-sm font-medium text-gray-300 mb-2">
+                                        <label className="block text-xs font-black uppercase tracking-tighter text-black mb-2">
                                             Certificate Title *
                                         </label>
                                         <input
@@ -203,11 +210,11 @@ export default function GeneratePage() {
                                             placeholder="Workshop Completion Certificate"
                                             required
                                             disabled={formState === "loading"}
-                                            className="w-full px-4 py-3 rounded-lg bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all disabled:opacity-50"
+                                            className="w-full px-4 py-3 border-3 border-black bg-white text-black font-bold placeholder-black/30 focus:outline-none focus:bg-neo-yellow transition-all disabled:opacity-50"
                                         />
                                     </div>
                                     <div>
-                                        <label className="block text-sm font-medium text-gray-300 mb-2">
+                                        <label className="block text-xs font-black uppercase tracking-tighter text-black mb-2">
                                             Description (Optional)
                                         </label>
                                         <textarea
@@ -216,11 +223,11 @@ export default function GeneratePage() {
                                             rows={3}
                                             placeholder="Awarded for successful completion of..."
                                             disabled={formState === "loading"}
-                                            className="w-full px-4 py-3 rounded-lg bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all resize-none disabled:opacity-50"
+                                            className="w-full px-4 py-3 border-3 border-black bg-white text-black font-bold placeholder-black/30 focus:outline-none focus:bg-neo-yellow transition-all resize-none disabled:opacity-50"
                                         />
                                     </div>
                                     <div>
-                                        <label className="block text-sm font-medium text-gray-300 mb-2">
+                                        <label className="block text-xs font-black uppercase tracking-tighter text-black mb-2">
                                             Expiry Date (Optional)
                                         </label>
                                         <input
@@ -228,7 +235,7 @@ export default function GeneratePage() {
                                             value={expiresAt}
                                             onChange={(e) => setExpiresAt(e.target.value)}
                                             disabled={formState === "loading"}
-                                            className="w-full px-4 py-3 rounded-lg bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all disabled:opacity-50"
+                                            className="w-full px-4 py-3 border-3 border-black bg-white text-black font-bold focus:outline-none focus:bg-neo-yellow transition-all disabled:opacity-50"
                                         />
                                     </div>
                                 </div>
@@ -238,15 +245,15 @@ export default function GeneratePage() {
                                     <button
                                         type="submit"
                                         disabled={formState === "loading"}
-                                        className="w-full py-3 px-4 rounded-lg bg-gradient-to-r from-blue-600 to-purple-600 text-white font-medium hover:from-blue-700 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                        className="w-full py-4 px-6 border-3 border-black bg-neo-yellow shadow-neo hover:shadow-none hover:translate-x-1 hover:translate-y-1 active:translate-x-[2px] active:translate-y-[2px] transition-all font-black uppercase italic disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
                                         {formState === "loading" ? (
-                                            <span className="flex items-center justify-center gap-2">
-                                                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                                            <span className="flex items-center justify-center gap-3">
+                                                <svg className="animate-spin h-6 w-6 text-black" viewBox="0 0 24 24">
                                                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                                                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                                                 </svg>
-                                                Generating Certificate...
+                                                GENERATING...
                                             </span>
                                         ) : (
                                             "Generate Certificate"

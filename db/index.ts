@@ -7,7 +7,7 @@ const dbUrl = new URL(connectionString);
 
 export const client = postgres({
     host: dbUrl.hostname,
-    port: 6543, // Use Supavisor pooler to avoid IPv6 issues
+    port: 6543,
     database: dbUrl.pathname.slice(1),
     username: dbUrl.username,
     password: decodeURIComponent(dbUrl.password),
