@@ -1,4 +1,5 @@
 import type { Metadata } from "next"
+import "./fonts.css"
 
 export const metadata: Metadata = {
     title: "Bulk Certificate Generator - CertiFoolProof",

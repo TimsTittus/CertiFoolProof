@@ -1,0 +1,29 @@
+/*
+ * Script fonts for typed signatures, bundled so they look the same everywhere.
+ * SIL Open Font License 1.1 - see ./fonts/README.txt.
+ * Served through the bundler (under /_next/static) so the auth middleware never sees the requests.
+ * The family names are stable on purpose: saved templates refer to them.
+ */
+@font-face {
+    font-family: "Dancing Script";
+    font-style: normal;
+    font-weight: 400 700;
+    font-display: swap;
+    src: url("./fonts/dancing-script.woff2") format("woff2");
+}
+
+@font-face {
+    font-family: "Great Vibes";
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url("./fonts/great-vibes.woff2") format("woff2");
+}
+
+@font-face {
+    font-family: "Caveat";
+    font-style: normal;
+    font-weight: 400 700;
+    font-display: swap;
+    src: url("./fonts/caveat.woff2") format("woff2");
+}

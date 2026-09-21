@@ -3,15 +3,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import {
-    NAME_FONTS,
-    PRESET_PALETTES,
     SIZE_PRESETS,
+    applyPageSize,
+    applyPreset,
     createDefaultDesign,
+    designFontSpecs,
+    loadDesignFonts,
+    patchElement,
     renderCertificate,
-    renderToCanvas,
-    type Align,
     type CertificateDesign,
+    type ElementId,
+    type ElementPatch,
     type PresetId,
+    type SignatureChange,
+    type TextElementId,
 } from "@/lib/bulk/renderer"
 import {
     extractNames,
@@ -22,6 +27,17 @@ import {
 } from "@/lib/bulk/csv"
 import { buildFileName, buildIndexCsv, downloadBlob, formatBytes } from "@/lib/bulk/export"
 import { createZip, type ZipEntry } from "@/lib/bulk/zip"
+import {
+    loadAutosave,
+    parseTemplate,
+    saveAutosave,
+    serializeTemplate,
+    type AutosaveOutcome,
+    type TemplateBackground,
+} from "@/lib/bulk/template"
+import { ElementPanel } from "./element-panel"
+import { PreviewStage } from "./preview-stage"
+import { buttonClass, cardClass, inputClass, labelClass, smallButtonClass } from "./ui"
 
 /** Keeps a single batch inside what a browser tab can comfortably hold in memory. */
 const MAX_NAMES = 5000
@@ -34,14 +50,33 @@ const PRESETS: { id: PresetId; label: string }[] = [
     { id: "minimal", label: "Minimal" },
 ]
 
-const inputClass =
-    "w-full px-3 py-2 border-3 border-black bg-white text-black font-bold text-sm placeholder-black/30 focus:outline-none focus:bg-neo-yellow transition-all disabled:opacity-50"
-const labelClass = "block text-[11px] font-black uppercase tracking-tighter text-black mb-1.5"
-const cardClass = "border-3 border-black bg-white p-5 sm:p-6 shadow-neo"
-const buttonClass =
-    "px-5 py-3 border-3 border-black font-black uppercase italic text-sm shadow-neo transition-all hover:shadow-none hover:translate-x-1 hover:translate-y-1 active:translate-x-[2px] active:translate-y-[2px] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-neo disabled:hover:translate-x-0 disabled:hover:translate-y-0"
+/** Template files are JSON; anything bigger than this is not one. */
+const MAX_TEMPLATE_FILE_BYTES = 40 * 1024 * 1024
 
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+/** Where the uploaded artwork came from, so it can be embedded in a saved template. */
+interface BackgroundSource {
+    name: string
+    file?: File
+    dataUrl?: string
+}
+
+function readFileAsDataUrl(file: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result))
+        reader.onerror = () => reject(reader.error ?? new Error("Could not read the artwork."))
+        reader.readAsDataURL(file)
+    })
+}
+
+function loadImage(url: string): Promise<HTMLImageElement> {
+    return new Promise((resolve, reject) => {
+        const image = new window.Image()
+        image.onload = () => resolve(image)
+        image.onerror = () => reject(new Error("The artwork in that template could not be loaded."))
+        image.src = url
+    })
+}
 
 type NameSource = "csv" | "paste"
 type Phase = "idle" | "working" | "done"
@@ -80,6 +115,16 @@ export default function BulkGeneratePage() {
     const [background, setBackground] = useState<HTMLImageElement | null>(null)
     const [backgroundName, setBackgroundName] = useState("")
     const backgroundUrlRef = useRef<string | null>(null)
+    const backgroundSourceRef = useRef<BackgroundSource | null>(null)
+
+    const [selectedId, setSelectedId] = useState<ElementId | null>("name")
+    const [hydrated, setHydrated] = useState(false)
+    // Bumped whenever a whole design is swapped in, so editors that keep their own state start over.
+    const [templateVersion, setTemplateVersion] = useState(0)
+    const [notice, setNotice] = useState("")
+    const [autosave, setAutosave] = useState<AutosaveOutcome | null>(null)
+    const designRef = useRef(design)
+    const [fontVersion, setFontVersion] = useState(0)
 
     const [source, setSource] = useState<NameSource>("csv")
     const [csv, setCsv] = useState<CsvState | null>(null)
@@ -95,15 +140,25 @@ export default function BulkGeneratePage() {
     const [result, setResult] = useState<GenerationResult | null>(null)
     const cancelRef = useRef(false)
 
-    const previewRef = useRef<HTMLCanvasElement | null>(null)
-    const [dragging, setDragging] = useState(false)
-
     const update = useCallback(
         <K extends keyof CertificateDesign>(key: K, value: CertificateDesign[K]) => {
             setDesign((current) => ({ ...current, [key]: value }))
         },
         []
     )
+
+    const patchDesignElement = useCallback((id: ElementId, patch: ElementPatch) => {
+        setDesign((current) => patchElement(current, id, patch))
+    }, [])
+
+    const updateText = useCallback(
+        (id: TextElementId, text: string) => patchDesignElement(id, { text }),
+        [patchDesignElement]
+    )
+
+    const changeSignature = useCallback((change: SignatureChange) => {
+        setDesign((current) => ({ ...current, signature: { ...current.signature, ...change } }))
+    }, [])
 
     const names = useMemo(() => {
         if (source === "paste") return parseNameList(pasted)
@@ -165,6 +220,7 @@ export default function BulkGeneratePage() {
                 width = MAX_BACKGROUND_WIDTH
             }
 
+            backgroundSourceRef.current = { name: file.name, file }
             setBackground(image)
             setBackgroundName(file.name)
             setDesign((current) => ({ ...current, mode: "upload", width, height }))
@@ -181,33 +237,196 @@ export default function BulkGeneratePage() {
             URL.revokeObjectURL(backgroundUrlRef.current)
             backgroundUrlRef.current = null
         }
+        backgroundSourceRef.current = null
         setBackground(null)
         setBackgroundName("")
         const size = SIZE_PRESETS[0]
-        setDesign((current) => ({ ...current, mode: "builtin", width: size.width, height: size.height }))
+        setDesign((current) => applyPageSize({ ...current, mode: "builtin" }, size.width, size.height))
     }, [])
+
+    /** The artwork as a data URL, ready to embed in a template. Cached after the first read. */
+    const getBackgroundEmbed = useCallback(async (): Promise<TemplateBackground | null> => {
+        const current = backgroundSourceRef.current
+        if (!current) return null
+        if (!current.dataUrl && current.file) current.dataUrl = await readFileAsDataUrl(current.file)
+        return current.dataUrl ? { name: current.name, dataUrl: current.dataUrl } : null
+    }, [])
+
+    /**
+     * Swaps a whole design (and its artwork) in. Returns a warning to show the user
+     * when the artwork could not come along, otherwise an empty string.
+     */
+    const applyTemplate = useCallback(
+        async (next: CertificateDesign, artwork: TemplateBackground | null): Promise<string> => {
+            let nextDesign = next
+            let image: HTMLImageElement | null = null
+            let warning = ""
+
+            if (next.mode === "upload") {
+                if (artwork) {
+                    try {
+                        image = await loadImage(artwork.dataUrl)
+                    } catch {
+                        warning =
+                            "The artwork saved with that template could not be loaded, so the built-in design is shown instead."
+                    }
+                } else {
+                    warning =
+                        "That design was made on your own uploaded artwork, which is not stored with it. Upload the artwork again to keep using it; the built-in design is shown until then."
+                }
+                if (!image) {
+                    const size = SIZE_PRESETS[0]
+                    nextDesign = applyPageSize({ ...next, mode: "builtin" }, size.width, size.height)
+                }
+            }
+
+            if (backgroundUrlRef.current) {
+                URL.revokeObjectURL(backgroundUrlRef.current)
+                backgroundUrlRef.current = null
+            }
+            if (image && artwork) {
+                backgroundSourceRef.current = { name: artwork.name, dataUrl: artwork.dataUrl }
+                setBackground(image)
+                setBackgroundName(artwork.name)
+            } else {
+                backgroundSourceRef.current = null
+                setBackground(null)
+                setBackgroundName("")
+            }
+
+            setDesign(nextDesign)
+            setTemplateVersion((version) => version + 1)
+            setResult(null)
+            return warning
+        },
+        []
+    )
+
+    const downloadTemplate = useCallback(async () => {
+        setError("")
+        try {
+            const artwork = design.mode === "upload" ? await getBackgroundEmbed() : null
+            const json = serializeTemplate(design, artwork)
+            const stamp = new Date().toISOString().slice(0, 10)
+            downloadBlob(
+                new Blob([json], { type: "application/json" }),
+                `certificate-template-${stamp}.json`
+            )
+        } catch {
+            setError("Could not save the template. Please try again.")
+        }
+    }, [design, getBackgroundEmbed])
+
+    const handleTemplateFile = useCallback(
+        async (file: File) => {
+            setError("")
+            setNotice("")
+            if (file.size > MAX_TEMPLATE_FILE_BYTES) {
+                setError("That file is too large to be a certificate template.")
+                return
+            }
+            try {
+                const loaded = parseTemplate(await file.text())
+                const warning = await applyTemplate(loaded.design, loaded.background)
+                if (warning) setNotice(warning)
+            } catch (caught) {
+                setError(caught instanceof Error ? caught.message : "Could not open that template.")
+            }
+        },
+        [applyTemplate]
+    )
+
+    const resetDesign = useCallback(() => {
+        if (!window.confirm("Reset the whole design back to the defaults? Your current layout will be lost.")) {
+            return
+        }
+        if (backgroundUrlRef.current) {
+            URL.revokeObjectURL(backgroundUrlRef.current)
+            backgroundUrlRef.current = null
+        }
+        backgroundSourceRef.current = null
+        setBackground(null)
+        setBackgroundName("")
+        setDesign(createDefaultDesign())
+        setSelectedId("name")
+        setTemplateVersion((version) => version + 1)
+        setNotice("")
+        setError("")
+        setResult(null)
+    }, [])
+
+    // Bring back whatever was being worked on before the page was refreshed.
+    useEffect(() => {
+        let cancelled = false
+        void (async () => {
+            const saved = loadAutosave()
+            if (saved) {
+                const warning = await applyTemplate(saved.design, saved.background)
+                if (warning && !cancelled) setNotice(warning)
+            }
+            if (!cancelled) setHydrated(true)
+        })()
+        return () => {
+            cancelled = true
+        }
+    }, [applyTemplate])
+
+    useEffect(() => {
+        designRef.current = design
+    }, [design])
+
+    // Canvas text never triggers a font download, so fetch the fonts the design uses and redraw once they arrive.
+    const fontSpecs = designFontSpecs(design).join("|")
+    useEffect(() => {
+        let cancelled = false
+        void loadDesignFonts(designRef.current).then((usedWebFont) => {
+            if (usedWebFont && !cancelled) setFontVersion((version) => version + 1)
+        })
+        return () => {
+            cancelled = true
+        }
+    }, [fontSpecs])
+
+    // Autosave shortly after each change, and once more as the page is left so nothing is lost.
+    useEffect(() => {
+        if (!hydrated) return
+        let cancelled = false
+        const timer = setTimeout(async () => {
+            let artwork: TemplateBackground | null = null
+            if (design.mode === "upload") {
+                try {
+                    artwork = await getBackgroundEmbed()
+                } catch {
+                    artwork = null
+                }
+            }
+            if (!cancelled) setAutosave(saveAutosave(design, artwork))
+        }, 600)
+        return () => {
+            cancelled = true
+            clearTimeout(timer)
+        }
+    }, [design, hydrated, background, getBackgroundEmbed])
+
+    useEffect(() => {
+        if (!hydrated) return
+        const flush = () => {
+            const current = designRef.current
+            const cached = backgroundSourceRef.current
+            const artwork =
+                current.mode === "upload" && cached?.dataUrl
+                    ? { name: cached.name, dataUrl: cached.dataUrl }
+                    : null
+            saveAutosave(current, artwork)
+        }
+        window.addEventListener("pagehide", flush)
+        return () => window.removeEventListener("pagehide", flush)
+    }, [hydrated])
 
     useEffect(() => {
         return () => {
             if (backgroundUrlRef.current) URL.revokeObjectURL(backgroundUrlRef.current)
         }
-    }, [])
-
-    useEffect(() => {
-        const canvas = previewRef.current
-        if (canvas) renderToCanvas(canvas, design, previewName, background)
-    }, [design, previewName, background])
-
-    const moveNameTo = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
-        const rect = event.currentTarget.getBoundingClientRect()
-        if (rect.width === 0 || rect.height === 0) return
-        const x = clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100)
-        const y = clamp(((event.clientY - rect.top) / rect.height) * 100, 0, 100)
-        setDesign((current) => ({
-            ...current,
-            nameXPct: Math.round(x * 10) / 10,
-            nameYPct: Math.round(y * 10) / 10,
-        }))
     }, [])
 
     /** Renders one certificate at full export resolution and returns its bytes. */
@@ -252,6 +471,7 @@ export default function BulkGeneratePage() {
     const downloadSampleCertificate = useCallback(async () => {
         setError("")
         try {
+            await loadDesignFonts(exportDesign)
             const canvas = document.createElement("canvas")
             canvas.width = exportDesign.width
             canvas.height = exportDesign.height
@@ -276,6 +496,7 @@ export default function BulkGeneratePage() {
         cancelRef.current = false
 
         try {
+            await loadDesignFonts(exportDesign)
             const canvas = document.createElement("canvas")
             canvas.width = exportDesign.width
             canvas.height = exportDesign.height
@@ -397,6 +618,19 @@ export default function BulkGeneratePage() {
                     </div>
                 ) : null}
 
+                {notice ? (
+                    <div className="mb-6 p-4 border-3 border-black bg-neo-yellow font-black text-sm shadow-neo flex items-start justify-between gap-4">
+                        <span>{notice}</span>
+                        <button
+                            type="button"
+                            onClick={() => setNotice("")}
+                            className="shrink-0 uppercase text-xs underline decoration-2 underline-offset-2"
+                        >
+                            Dismiss
+                        </button>
+                    </div>
+                ) : null}
+
                 {tooMany ? (
                     <div className="mb-6 p-4 border-3 border-black bg-neo-yellow font-black text-sm shadow-neo">
                         Your list has {names.length.toLocaleString()} names. Only the first{" "}
@@ -407,6 +641,42 @@ export default function BulkGeneratePage() {
 
                 <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-6">
                     <div className="space-y-6 min-w-0">
+                        <section className={cardClass}>
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                <div>
+                                    <h2 className="text-lg font-black uppercase italic leading-tight">Template</h2>
+                                    <p className="font-bold text-xs text-black/70 mt-0.5">
+                                        {autosave === "failed"
+                                            ? "Autosave is unavailable in this browser - save the template to keep your work."
+                                            : autosave === "saved-without-artwork"
+                                                ? "Autosaved. Your uploaded artwork is too large to autosave - save the template file to keep it."
+                                                : "Your design is autosaved in this browser, so a refresh will not lose it."}
+                                    </p>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                    <button type="button" onClick={() => void downloadTemplate()} className={smallButtonClass}>
+                                        Save template
+                                    </button>
+                                    <label className={`${smallButtonClass} cursor-pointer`}>
+                                        Load template
+                                        <input
+                                            type="file"
+                                            accept=".json,application/json"
+                                            className="hidden"
+                                            onChange={(event) => {
+                                                const file = event.target.files?.[0]
+                                                if (file) void handleTemplateFile(file)
+                                                event.target.value = ""
+                                            }}
+                                        />
+                                    </label>
+                                    <button type="button" onClick={resetDesign} className={smallButtonClass}>
+                                        Reset
+                                    </button>
+                                </div>
+                            </div>
+                        </section>
+
                         <section className={cardClass}>
                             <StepHeading step={1} title="Design the certificate" hint="Start from a preset or drop in your own artwork." />
 
@@ -443,8 +713,9 @@ export default function BulkGeneratePage() {
                                         Exporting at {design.width} × {design.height} px
                                     </p>
                                     <p className="font-bold text-xs mb-3">
-                                        Drag on the preview to place the name exactly where your artwork leaves
-                                        room for it.
+                                        Drag the name on the preview to place it exactly where your artwork
+                                        leaves room for it. Turn on other elements in step 2 if you want them
+                                        drawn over the artwork too.
                                     </p>
                                     <button
                                         type="button"
@@ -464,12 +735,7 @@ export default function BulkGeneratePage() {
                                                     key={preset.id}
                                                     type="button"
                                                     onClick={() =>
-                                                        setDesign((current) => ({
-                                                            ...current,
-                                                            preset: preset.id,
-                                                            ...PRESET_PALETTES[preset.id],
-                                                            nameColor: PRESET_PALETTES[preset.id].ink,
-                                                        }))
+                                                        setDesign((current) => applyPreset(current, preset.id))
                                                     }
                                                     className={`px-2 py-2 border-3 border-black font-black uppercase text-[11px] transition-all ${design.preset === preset.id ? "bg-neo-yellow shadow-none" : "bg-white shadow-neo hover:shadow-none hover:translate-x-1 hover:translate-y-1"}`}
                                                 >
@@ -477,6 +743,10 @@ export default function BulkGeneratePage() {
                                                 </button>
                                             ))}
                                         </div>
+                                        <p className="font-bold text-[11px] text-black/60 mt-1.5">
+                                            Changing the style or page size resets where the text sits. Your
+                                            wording is kept.
+                                        </p>
                                     </div>
 
                                     <div>
@@ -492,11 +762,9 @@ export default function BulkGeneratePage() {
                                                     (item) => `${item.width}x${item.height}` === event.target.value
                                                 )
                                                 if (preset) {
-                                                    setDesign((current) => ({
-                                                        ...current,
-                                                        width: preset.width,
-                                                        height: preset.height,
-                                                    }))
+                                                    setDesign((current) =>
+                                                        applyPageSize(current, preset.width, preset.height)
+                                                    )
                                                 }
                                             }}
                                         >
@@ -538,8 +806,8 @@ export default function BulkGeneratePage() {
                                         <input
                                             id="organization"
                                             className={inputClass}
-                                            value={design.organization}
-                                            onChange={(event) => update("organization", event.target.value)}
+                                            value={design.elements.organization.text}
+                                            onChange={(event) => updateText("organization", event.target.value)}
                                             placeholder="Computer Science Club"
                                         />
                                     </div>
@@ -551,8 +819,8 @@ export default function BulkGeneratePage() {
                                         <input
                                             id="heading"
                                             className={inputClass}
-                                            value={design.heading}
-                                            onChange={(event) => update("heading", event.target.value)}
+                                            value={design.elements.heading.text}
+                                            onChange={(event) => updateText("heading", event.target.value)}
                                             placeholder="Certificate of Participation"
                                         />
                                     </div>
@@ -564,8 +832,8 @@ export default function BulkGeneratePage() {
                                         <input
                                             id="subheading"
                                             className={inputClass}
-                                            value={design.subheading}
-                                            onChange={(event) => update("subheading", event.target.value)}
+                                            value={design.elements.subheading.text}
+                                            onChange={(event) => updateText("subheading", event.target.value)}
                                             placeholder="This is proudly presented to"
                                         />
                                     </div>
@@ -578,8 +846,8 @@ export default function BulkGeneratePage() {
                                             id="body"
                                             rows={3}
                                             className={`${inputClass} resize-none`}
-                                            value={design.body}
-                                            onChange={(event) => update("body", event.target.value)}
+                                            value={design.elements.body.text}
+                                            onChange={(event) => updateText("body", event.target.value)}
                                             placeholder="for successfully completing..."
                                         />
                                     </div>
@@ -587,46 +855,46 @@ export default function BulkGeneratePage() {
                                     <div className="grid grid-cols-2 gap-3">
                                         <div>
                                             <label className={labelClass} htmlFor="left-label">
-                                                Bottom-left label
+                                                Date label
                                             </label>
                                             <input
                                                 id="left-label"
                                                 className={inputClass}
-                                                value={design.leftLabel}
-                                                onChange={(event) => update("leftLabel", event.target.value)}
+                                                value={design.elements.dateLabel.text}
+                                                onChange={(event) => updateText("dateLabel", event.target.value)}
                                             />
                                         </div>
                                         <div>
                                             <label className={labelClass} htmlFor="left-value">
-                                                Bottom-left value
+                                                Date
                                             </label>
                                             <input
                                                 id="left-value"
                                                 className={inputClass}
-                                                value={design.leftValue}
-                                                onChange={(event) => update("leftValue", event.target.value)}
+                                                value={design.elements.date.text}
+                                                onChange={(event) => updateText("date", event.target.value)}
                                             />
                                         </div>
                                         <div>
                                             <label className={labelClass} htmlFor="right-label">
-                                                Bottom-right label
+                                                Signature label
                                             </label>
                                             <input
                                                 id="right-label"
                                                 className={inputClass}
-                                                value={design.rightLabel}
-                                                onChange={(event) => update("rightLabel", event.target.value)}
+                                                value={design.elements.signatureLabel.text}
+                                                onChange={(event) => updateText("signatureLabel", event.target.value)}
                                             />
                                         </div>
                                         <div>
                                             <label className={labelClass} htmlFor="right-value">
-                                                Bottom-right value
+                                                Signature name
                                             </label>
                                             <input
                                                 id="right-value"
                                                 className={inputClass}
-                                                value={design.rightValue}
-                                                onChange={(event) => update("rightValue", event.target.value)}
+                                                value={design.elements.signatureName.text}
+                                                onChange={(event) => updateText("signatureName", event.target.value)}
                                             />
                                         </div>
                                     </div>
@@ -637,170 +905,18 @@ export default function BulkGeneratePage() {
                         <section className={cardClass}>
                             <StepHeading
                                 step={2}
-                                title="Place the participant name"
-                                hint="Click or drag anywhere on the preview to move the name."
+                                title="Edit the text"
+                                hint="Every line is its own element. Click it on the preview, then drag, resize or restyle it."
                             />
 
-                            <div className="space-y-4">
-                                <div>
-                                    <label className={labelClass} htmlFor="name-font">
-                                        Font
-                                    </label>
-                                    <select
-                                        id="name-font"
-                                        className={inputClass}
-                                        value={design.nameFont}
-                                        onChange={(event) => update("nameFont", event.target.value)}
-                                    >
-                                        {NAME_FONTS.map((font) => (
-                                            <option key={font.value} value={font.value}>
-                                                {font.label}
-                                            </option>
-                                        ))}
-                                    </select>
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-3">
-                                    <div>
-                                        <label className={labelClass} htmlFor="name-color">
-                                            Name colour
-                                        </label>
-                                        <input
-                                            id="name-color"
-                                            type="color"
-                                            value={design.nameColor}
-                                            onChange={(event) => update("nameColor", event.target.value)}
-                                            className="w-full h-10 border-3 border-black bg-white cursor-pointer p-0.5"
-                                        />
-                                    </div>
-                                    <div>
-                                        <span className={labelClass}>Alignment</span>
-                                        <div className="grid grid-cols-3 gap-1">
-                                            {(["left", "center", "right"] as Align[]).map((align) => (
-                                                <button
-                                                    key={align}
-                                                    type="button"
-                                                    onClick={() => update("nameAlign", align)}
-                                                    className={`h-10 border-3 border-black font-black uppercase text-[10px] transition-all ${design.nameAlign === align ? "bg-black text-white" : "bg-white hover:bg-neo-yellow"}`}
-                                                >
-                                                    {align[0]}
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div>
-                                    <label className={labelClass} htmlFor="name-size">
-                                        Name size · {design.nameSizePct.toFixed(1)}% of height
-                                    </label>
-                                    <input
-                                        id="name-size"
-                                        type="range"
-                                        min={2}
-                                        max={20}
-                                        step={0.5}
-                                        value={design.nameSizePct}
-                                        onChange={(event) => update("nameSizePct", Number(event.target.value))}
-                                        className="w-full accent-black"
-                                    />
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-3">
-                                    <div>
-                                        <label className={labelClass} htmlFor="name-width">
-                                            Max width · {design.nameMaxWidthPct}%
-                                        </label>
-                                        <input
-                                            id="name-width"
-                                            type="range"
-                                            min={20}
-                                            max={100}
-                                            step={1}
-                                            value={design.nameMaxWidthPct}
-                                            onChange={(event) =>
-                                                update("nameMaxWidthPct", Number(event.target.value))
-                                            }
-                                            className="w-full accent-black"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className={labelClass} htmlFor="name-spacing">
-                                            Letter spacing · {design.nameLetterSpacing}px
-                                        </label>
-                                        <input
-                                            id="name-spacing"
-                                            type="range"
-                                            min={0}
-                                            max={20}
-                                            step={1}
-                                            value={design.nameLetterSpacing}
-                                            onChange={(event) =>
-                                                update("nameLetterSpacing", Number(event.target.value))
-                                            }
-                                            className="w-full accent-black"
-                                        />
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-3">
-                                    <div>
-                                        <label className={labelClass} htmlFor="name-x">
-                                            Horizontal · {design.nameXPct}%
-                                        </label>
-                                        <input
-                                            id="name-x"
-                                            type="number"
-                                            min={0}
-                                            max={100}
-                                            step={0.5}
-                                            value={design.nameXPct}
-                                            onChange={(event) =>
-                                                update("nameXPct", clamp(Number(event.target.value) || 0, 0, 100))
-                                            }
-                                            className={inputClass}
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className={labelClass} htmlFor="name-y">
-                                            Vertical · {design.nameYPct}%
-                                        </label>
-                                        <input
-                                            id="name-y"
-                                            type="number"
-                                            min={0}
-                                            max={100}
-                                            step={0.5}
-                                            value={design.nameYPct}
-                                            onChange={(event) =>
-                                                update("nameYPct", clamp(Number(event.target.value) || 0, 0, 100))
-                                            }
-                                            className={inputClass}
-                                        />
-                                    </div>
-                                </div>
-
-                                <div className="flex flex-wrap gap-4 pt-1">
-                                    <label className="flex items-center gap-2 font-black uppercase text-xs cursor-pointer">
-                                        <input
-                                            type="checkbox"
-                                            checked={design.nameUppercase}
-                                            onChange={(event) => update("nameUppercase", event.target.checked)}
-                                            className="w-5 h-5 border-3 border-black accent-black"
-                                        />
-                                        Uppercase
-                                    </label>
-                                    <label className="flex items-center gap-2 font-black uppercase text-xs cursor-pointer">
-                                        <input
-                                            type="checkbox"
-                                            checked={design.nameUnderline}
-                                            onChange={(event) => update("nameUnderline", event.target.checked)}
-                                            className="w-5 h-5 border-3 border-black accent-black"
-                                        />
-                                        Underline
-                                    </label>
-                                </div>
-                            </div>
+                            <ElementPanel
+                                design={design}
+                                selectedId={selectedId}
+                                padKey={templateVersion}
+                                onSelect={setSelectedId}
+                                onPatch={patchDesignElement}
+                                onSignatureChange={changeSignature}
+                            />
                         </section>
 
                         <section className={cardClass}>
@@ -933,28 +1049,19 @@ export default function BulkGeneratePage() {
                             <section className={cardClass}>
                                 <div className="flex items-baseline justify-between gap-3 mb-4">
                                     <h2 className="text-lg sm:text-xl font-black uppercase italic">Live preview</h2>
-                                    <span className="font-bold text-[11px] text-black/60 uppercase">
-                                        Drag to place the name
+                                    <span className="font-bold text-[11px] text-black/60 uppercase text-right">
+                                        Click to select · drag to move
                                     </span>
                                 </div>
                                 <div className="border-3 border-black bg-neo-cream p-2 shadow-neo">
-                                    <canvas
-                                        ref={previewRef}
-                                        onPointerDown={(event) => {
-                                            event.currentTarget.setPointerCapture(event.pointerId)
-                                            setDragging(true)
-                                            moveNameTo(event)
-                                        }}
-                                        onPointerMove={(event) => {
-                                            if (dragging) moveNameTo(event)
-                                        }}
-                                        onPointerUp={(event) => {
-                                            event.currentTarget.releasePointerCapture(event.pointerId)
-                                            setDragging(false)
-                                        }}
-                                        onPointerCancel={() => setDragging(false)}
-                                        style={{ touchAction: "none" }}
-                                        className="w-full h-auto block cursor-crosshair select-none"
+                                    <PreviewStage
+                                        design={design}
+                                        name={previewName}
+                                        background={background}
+                                        selectedId={selectedId}
+                                        onSelect={setSelectedId}
+                                        onPatch={patchDesignElement}
+                                        fontVersion={fontVersion}
                                     />
                                 </div>
                                 <p className="font-bold text-xs text-black/70 mt-3">
