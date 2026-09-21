@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server"
 import type { NextRequest } from "next/server"
 
-const publicRoutes = ["/", "/login", "/signup", "/verify"]
+// "/generate/bulk" is public even though "/generate" is role-gated
+const publicRoutes = ["/", "/login", "/signup", "/verify", "/generate/bulk"]
 const authRoutes = ["/login", "/signup"]
 
 const roleRoutes: Record<string, string[]> = {

@@ -71,6 +71,9 @@ export default function GeneratePage() {
                             <Link href="/generate" className="text-black font-bold underline decoration-3 underline-offset-4 text-sm uppercase tracking-wider">
                                 Generate
                             </Link>
+                            <Link href="/generate/bulk" className="text-black font-bold hover:underline decoration-3 underline-offset-4 text-sm uppercase tracking-wider">
+                                Bulk
+                            </Link>
                         </div>
                     </div>
                 </div>
@@ -147,6 +150,24 @@ export default function GeneratePage() {
                             <p className="text-black font-bold text-sm sm:text-base border-t-3 border-black pt-2">
                                 Create and issue a new verified certificate.
                             </p>
+                        </div>
+
+                        {/* Bulk generation shortcut */}
+                        <div className="mb-8 border-3 border-black bg-neo-pink p-5 sm:p-6 shadow-neo flex flex-col sm:flex-row sm:items-center gap-4 justify-between">
+                            <div>
+                                <h2 className="text-lg sm:text-xl font-black uppercase italic mb-1">
+                                    Issuing for a whole event?
+                                </h2>
+                                <p className="text-black font-bold text-xs sm:text-sm">
+                                    Upload a CSV of participant names and download every certificate as one ZIP.
+                                </p>
+                            </div>
+                            <Link
+                                href="/generate/bulk"
+                                className="shrink-0 px-6 py-3 border-3 border-black bg-white text-center font-black uppercase italic text-sm shadow-neo hover:shadow-none hover:translate-x-1 hover:translate-y-1 active:translate-x-[2px] active:translate-y-[2px] transition-all"
+                            >
+                                Bulk Generate →
+                            </Link>
                         </div>
 
                         <div className="bg-white border-3 border-black p-6 sm:p-8 shadow-neo">

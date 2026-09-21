@@ -13,6 +13,12 @@ A robust digital certificate verification platform that provides secure, efficie
   - QR code integration
   - Tamper-proof digital signatures
 
+- **Bulk Certificate Generator** (free, no sign-up)
+  - CSV upload with automatic name-column detection
+  - Built-in templates or your own background artwork, with drag-to-place names
+  - Every participant's certificate delivered in a single ZIP
+  - Runs entirely in the browser - participant lists are never uploaded
+
 - **Verification System**
   - Quick ID-based verification
   - QR code scanning capability

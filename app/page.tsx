@@ -16,6 +16,12 @@ export default function Home() {
             </Link>
             <div className="flex items-center gap-3 sm:gap-6">
               <Link
+                href="/generate/bulk"
+                className="hidden sm:inline text-black font-black hover:underline decoration-3 underline-offset-4 text-xs sm:text-sm uppercase tracking-wider"
+              >
+                Bulk Generate
+              </Link>
+              <Link
                 href="/verify"
                 className="text-black font-black hover:underline decoration-3 underline-offset-4 text-xs sm:text-sm uppercase tracking-wider"
               >
@@ -56,11 +62,82 @@ export default function Home() {
               Get Started →
             </Link>
             <Link
+              href="/generate/bulk"
+              className="px-8 py-4 border-3 border-black bg-neo-pink text-black font-black text-base sm:text-lg uppercase italic shadow-neo hover:shadow-neo-lg hover:-translate-x-1 hover:-translate-y-1 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all duration-100 text-center"
+            >
+              Bulk Generate — Free
+            </Link>
+            <Link
               href="/verify"
               className="px-8 py-4 border-3 border-black bg-white text-black font-black text-base sm:text-lg uppercase italic shadow-neo hover:shadow-neo-lg hover:-translate-x-1 hover:-translate-y-1 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all duration-100 text-center"
             >
               Verify a Certificate
             </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* Bulk Generator - free, no sign-up */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+        <div className="border-3 border-black bg-neo-pink p-6 sm:p-10 shadow-neo">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center">
+            <div>
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 border-3 border-black bg-white text-black font-black text-[11px] sm:text-xs uppercase tracking-wider shadow-neo mb-5">
+                <span className="w-2.5 h-2.5 rounded-full bg-green-500 border-2 border-black animate-pulse" />
+                No sign-up needed
+              </div>
+
+              <h2 className="text-3xl sm:text-5xl font-black text-black uppercase italic leading-tight mb-5">
+                500 certificates.
+                <br />
+                One{" "}
+                <span className="bg-neo-yellow px-2 border-3 border-black shadow-neo not-italic inline-block my-1">
+                  CSV
+                </span>{" "}
+                file.
+              </h2>
+
+              <p className="text-black font-bold text-sm sm:text-lg leading-relaxed border-t-3 border-black pt-5 mb-6">
+                Running an event, workshop or hackathon? Design your certificate, upload a CSV of
+                participant names, and download a ZIP with a personalised certificate for every single
+                person. Free for everyone, and it all runs inside your browser — your participant list
+                never leaves your device.
+              </p>
+
+              <Link
+                href="/generate/bulk"
+                className="inline-block px-8 py-4 border-3 border-black bg-neo-yellow text-black font-black text-base sm:text-lg uppercase italic shadow-neo hover:shadow-neo-lg hover:-translate-x-1 hover:-translate-y-1 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all duration-100"
+              >
+                Generate in Bulk →
+              </Link>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="bg-white border-3 border-black p-5 shadow-neo">
+                <p className="text-3xl font-black text-black uppercase italic mb-1">CSV</p>
+                <p className="text-black font-bold text-xs sm:text-sm">
+                  Upload any participant list — the name column is detected for you.
+                </p>
+              </div>
+              <div className="bg-neo-cream border-3 border-black p-5 shadow-neo">
+                <p className="text-3xl font-black text-black uppercase italic mb-1">Custom</p>
+                <p className="text-black font-bold text-xs sm:text-sm">
+                  Pick a template or upload your own artwork, then drag the name into place.
+                </p>
+              </div>
+              <div className="bg-neo-mint border-3 border-black p-5 shadow-neo">
+                <p className="text-3xl font-black text-black uppercase italic mb-1">ZIP</p>
+                <p className="text-black font-bold text-xs sm:text-sm">
+                  Every certificate saved under its participant&apos;s own name.
+                </p>
+              </div>
+              <div className="bg-white border-3 border-black p-5 shadow-neo">
+                <p className="text-3xl font-black text-black uppercase italic mb-1">Free</p>
+                <p className="text-black font-bold text-xs sm:text-sm">
+                  No account, no upload, no limits per event. Sign in only for verifiable IDs.
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -226,6 +303,9 @@ export default function Home() {
             © 2026 CertiFoolProof. All rights reserved.
           </span>
           <div className="flex gap-6 text-xs sm:text-sm text-black font-black uppercase">
+            <Link href="/generate/bulk" className="hover:underline decoration-3 underline-offset-4 transition-colors">
+              Bulk Generate
+            </Link>
             <Link href="/verify" className="hover:underline decoration-3 underline-offset-4 transition-colors">
               Verify
             </Link>
