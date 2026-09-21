@@ -56,7 +56,8 @@ import {
 export const TEMPLATE_APP = "certifoolproof-certificate-template"
 export const TEMPLATE_VERSION = 2
 
-const AUTOSAVE_KEY = "certifoolproof.bulk.template.v1"
+/** Where the bulk generator keeps its work. Other screens pass a key of their own. */
+export const BULK_AUTOSAVE_KEY = "certifoolproof.bulk.template.v1"
 const MAX_AUTOSAVE_ARTWORK_CHARS = 2_500_000
 const MAX_TEMPLATE_CHARS = 40_000_000
 
@@ -476,7 +477,8 @@ function withoutImages(design: CertificateDesign): CertificateDesign {
  */
 export function saveAutosave(
     design: CertificateDesign,
-    background: TemplateBackground | null
+    background: TemplateBackground | null,
+    key: string = BULK_AUTOSAVE_KEY
 ): AutosaveOutcome {
     const needsArtwork = design.mode === "upload"
     const embed = background && background.dataUrl.length <= MAX_AUTOSAVE_ARTWORK_CHARS ? background : null
@@ -489,7 +491,7 @@ export function saveAutosave(
 
     for (const attempt of attempts) {
         try {
-            window.localStorage.setItem(AUTOSAVE_KEY, serializeTemplate(attempt.design, attempt.background))
+            window.localStorage.setItem(key, serializeTemplate(attempt.design, attempt.background))
             return attempt.complete ? "saved" : "saved-without-artwork"
         } catch {
         }
@@ -497,18 +499,18 @@ export function saveAutosave(
     return "failed"
 }
 
-export function loadAutosave(): LoadedTemplate | null {
+export function loadAutosave(key: string = BULK_AUTOSAVE_KEY): LoadedTemplate | null {
     try {
-        const stored = window.localStorage.getItem(AUTOSAVE_KEY)
+        const stored = window.localStorage.getItem(key)
         return stored ? parseTemplate(stored) : null
     } catch {
         return null
     }
 }
 
-export function clearAutosave() {
+export function clearAutosave(key: string = BULK_AUTOSAVE_KEY) {
     try {
-        window.localStorage.removeItem(AUTOSAVE_KEY)
+        window.localStorage.removeItem(key)
     } catch {
         // Nothing to clear if storage is unavailable.
     }

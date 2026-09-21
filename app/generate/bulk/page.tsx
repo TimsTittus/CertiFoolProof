@@ -1,27 +1,17 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import {
     ELEMENT_IDS,
     ELEMENT_LABELS,
-    SIZE_PRESETS,
     TEXT_ELEMENT_IDS,
-    applyPageSize,
-    applyPreset,
-    createDefaultDesign,
-    designFontSpecs,
     isSignatoryText,
     loadDesignFonts,
     loadDesignImages,
-    patchElement,
     renderCertificate,
     type CertificateDesign,
     type ElementId,
-    type ElementPatch,
-    type PresetId,
-    type Selection,
-    type TextElementId,
 } from "@/lib/bulk/renderer"
 import {
     NAME_NUDGE_ZERO,
@@ -43,61 +33,37 @@ import {
 import { buildFileName, buildIndexCsv, downloadBlob, formatBytes } from "@/lib/bulk/export"
 import { createZip, type ZipEntry } from "@/lib/bulk/zip"
 import {
-    loadAutosave,
-    parseTemplate,
-    saveAutosave,
-    serializeTemplate,
-    type AutosaveOutcome,
-    type TemplateBackground,
-} from "@/lib/bulk/template"
+    createPdf,
+    createPdfBytes,
+    encodeCanvasForPdf,
+    pdfPageSize,
+    type PdfPage,
+} from "@/lib/bulk/pdf"
+import { BULK_AUTOSAVE_KEY } from "@/lib/bulk/template"
+import { DesignBasics } from "./design-basics"
 import { ElementPanel } from "./element-panel"
 import { NumberField, RangeField } from "./fields"
 import { LogoPanel } from "./logo-panel"
 import { PreviewStage } from "./preview-stage"
 import { SignatoryPanel } from "./signatory-panel"
+import { useDesigner } from "./use-designer"
 import { buttonClass, cardClass, clamp, inputClass, labelClass, smallButtonClass } from "./ui"
 
 /** Keeps a single batch inside what a browser tab can comfortably hold in memory. */
 const MAX_NAMES = 5000
-/** Uploaded artwork above this width is scaled down - past here it is all weight, no sharpness. */
-const MAX_BACKGROUND_WIDTH = 3000
-
-const PRESETS: { id: PresetId; label: string }[] = [
-    { id: "classic", label: "Classic" },
-    { id: "neo", label: "Neo Brutal" },
-    { id: "minimal", label: "Minimal" },
-]
-
-/** Template files are JSON; anything bigger than this is not one. */
-const MAX_TEMPLATE_FILE_BYTES = 40 * 1024 * 1024
-
-/** Where the uploaded artwork came from, so it can be embedded in a saved template. */
-interface BackgroundSource {
-    name: string
-    file?: File
-    dataUrl?: string
-}
-
-function readFileAsDataUrl(file: Blob): Promise<string> {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onload = () => resolve(String(reader.result))
-        reader.onerror = () => reject(reader.error ?? new Error("Could not read the artwork."))
-        reader.readAsDataURL(file)
-    })
-}
-
-function loadImage(url: string): Promise<HTMLImageElement> {
-    return new Promise((resolve, reject) => {
-        const image = new window.Image()
-        image.onload = () => resolve(image)
-        image.onerror = () => reject(new Error("The artwork in that template could not be loaded."))
-        image.src = url
-    })
-}
 
 type NameSource = "csv" | "paste"
 type Phase = "idle" | "working" | "done"
+export type ExportFormat = "png" | "jpeg" | "pdf"
+/** "single" collects every certificate in one PDF; "each" gives everybody their own, inside the ZIP. */
+type PdfMode = "single" | "each"
+
+/** How sharp the picture on a PDF page is. 100 keeps every pixel; lower encodes a JPEG. */
+const PDF_QUALITIES: { value: number; label: string }[] = [
+    { value: 100, label: "Lossless · sharpest text" },
+    { value: 92, label: "High · smaller file" },
+    { value: 80, label: "Compact · smallest file" },
+]
 
 interface CsvState {
     fileName: string
@@ -110,6 +76,8 @@ interface GenerationResult {
     blob: Blob
     fileName: string
     count: number
+    /** A ZIP of one file per person, or a single PDF holding every certificate. */
+    kind: "zip" | "pdf"
 }
 
 /** What has been changed by hand for one recipient only. */
@@ -160,22 +128,34 @@ function StepHeading({ step, title, hint }: { step: number; title: string; hint?
 }
 
 export default function BulkGeneratePage() {
-    const [design, setDesign] = useState<CertificateDesign>(createDefaultDesign)
     const [error, setError] = useState("")
+    const [result, setResult] = useState<GenerationResult | null>(null)
 
-    const [background, setBackground] = useState<HTMLImageElement | null>(null)
-    const [backgroundName, setBackgroundName] = useState("")
-    const backgroundUrlRef = useRef<string | null>(null)
-    const backgroundSourceRef = useRef<BackgroundSource | null>(null)
+    // Anything already generated no longer matches the design once it is edited.
+    const invalidateResult = useCallback(() => setResult(null), [])
 
-    const [selection, setSelection] = useState<Selection | null>({ kind: "element", id: "name" })
-    const [hydrated, setHydrated] = useState(false)
-    // Bumped whenever a whole design is swapped in, so editors that keep their own state start over.
-    const [templateVersion, setTemplateVersion] = useState(0)
-    const [notice, setNotice] = useState("")
-    const [autosave, setAutosave] = useState<AutosaveOutcome | null>(null)
-    const designRef = useRef(design)
-    const [assetVersion, setAssetVersion] = useState(0)
+    const designer = useDesigner({
+        autosaveKey: BULK_AUTOSAVE_KEY,
+        onError: setError,
+        onChange: invalidateResult,
+    })
+    const {
+        design,
+        setDesign,
+        patchElement: patchDesignElement,
+        selection,
+        setSelection,
+        selectElement,
+        background,
+        assetVersion,
+        templateVersion,
+        autosave,
+        notice,
+        setNotice,
+        downloadTemplate,
+        handleTemplateFile,
+        resetDesign,
+    } = designer
 
     const [source, setSource] = useState<NameSource>("csv")
     const [csv, setCsv] = useState<CsvState | null>(null)
@@ -189,36 +169,16 @@ export default function BulkGeneratePage() {
     /** Ids of the elements whose text did not fit on the previewed certificate. */
     const [overflowIds, setOverflowIds] = useState("")
 
-    const [format, setFormat] = useState<"png" | "jpeg">("png")
+    const [format, setFormat] = useState<ExportFormat>("png")
     const [quality, setQuality] = useState(92)
+    const [pdfQuality, setPdfQuality] = useState(PDF_QUALITIES[0].value)
+    const [pdfMode, setPdfMode] = useState<PdfMode>("single")
     const [scale, setScale] = useState(1)
     const [pattern, setPattern] = useState("{name}")
 
     const [phase, setPhase] = useState<Phase>("idle")
     const [progress, setProgress] = useState(0)
-    const [result, setResult] = useState<GenerationResult | null>(null)
     const cancelRef = useRef(false)
-
-    const update = useCallback(
-        <K extends keyof CertificateDesign>(key: K, value: CertificateDesign[K]) => {
-            setDesign((current) => ({ ...current, [key]: value }))
-        },
-        []
-    )
-
-    const patchDesignElement = useCallback((id: ElementId, patch: ElementPatch) => {
-        setDesign((current) => patchElement(current, id, patch))
-    }, [])
-
-    const updateText = useCallback(
-        (id: TextElementId, text: string) => patchDesignElement(id, { text }),
-        [patchDesignElement]
-    )
-
-    const selectElement = useCallback(
-        (id: ElementId | null) => setSelection(id ? { kind: "element", id } : null),
-        []
-    )
 
     const recipients = useMemo(() => {
         if (source === "paste") return recipientsFromNames(parseNameList(pasted))
@@ -378,244 +338,30 @@ export default function BulkGeneratePage() {
         downloadBlob(new Blob([sample], { type: "text/csv;charset=utf-8" }), "sample-participants.csv")
     }, [])
 
-    const handleBackgroundFile = useCallback((file: File) => {
-        setError("")
-        setResult(null)
-        const url = URL.createObjectURL(file)
-        const image = new window.Image()
-
-        image.onload = () => {
-            if (backgroundUrlRef.current) URL.revokeObjectURL(backgroundUrlRef.current)
-            backgroundUrlRef.current = url
-
-            let width = image.naturalWidth
-            let height = image.naturalHeight
-            if (width > MAX_BACKGROUND_WIDTH) {
-                height = Math.round((height * MAX_BACKGROUND_WIDTH) / width)
-                width = MAX_BACKGROUND_WIDTH
-            }
-
-            backgroundSourceRef.current = { name: file.name, file }
-            setBackground(image)
-            setBackgroundName(file.name)
-            setDesign((current) => ({ ...current, mode: "upload", width, height }))
-        }
-        image.onerror = () => {
-            URL.revokeObjectURL(url)
-            setError("That image could not be loaded. Try a PNG or JPG file.")
-        }
-        image.src = url
-    }, [])
-
-    const clearBackground = useCallback(() => {
-        if (backgroundUrlRef.current) {
-            URL.revokeObjectURL(backgroundUrlRef.current)
-            backgroundUrlRef.current = null
-        }
-        backgroundSourceRef.current = null
-        setBackground(null)
-        setBackgroundName("")
-        const size = SIZE_PRESETS[0]
-        setDesign((current) => applyPageSize({ ...current, mode: "builtin" }, size.width, size.height))
-    }, [])
-
-    /** The artwork as a data URL, ready to embed in a template. Cached after the first read. */
-    const getBackgroundEmbed = useCallback(async (): Promise<TemplateBackground | null> => {
-        const current = backgroundSourceRef.current
-        if (!current) return null
-        if (!current.dataUrl && current.file) current.dataUrl = await readFileAsDataUrl(current.file)
-        return current.dataUrl ? { name: current.name, dataUrl: current.dataUrl } : null
-    }, [])
-
     /**
-     * Swaps a whole design (and its artwork) in. Returns a warning to show the user
-     * when the artwork could not come along, otherwise an empty string.
+     * Draws one certificate at full export resolution. `opaque` paints white behind
+     * anything transparent, for the formats that have no alpha channel of their own.
      */
-    const applyTemplate = useCallback(
-        async (next: CertificateDesign, artwork: TemplateBackground | null): Promise<string> => {
-            let nextDesign = next
-            let image: HTMLImageElement | null = null
-            let warning = ""
-
-            if (next.mode === "upload") {
-                if (artwork) {
-                    try {
-                        image = await loadImage(artwork.dataUrl)
-                    } catch {
-                        warning =
-                            "The artwork saved with that template could not be loaded, so the built-in design is shown instead."
-                    }
-                } else {
-                    warning =
-                        "That design was made on your own uploaded artwork, which is not stored with it. Upload the artwork again to keep using it; the built-in design is shown until then."
-                }
-                if (!image) {
-                    const size = SIZE_PRESETS[0]
-                    nextDesign = applyPageSize({ ...next, mode: "builtin" }, size.width, size.height)
-                }
-            }
-
-            if (backgroundUrlRef.current) {
-                URL.revokeObjectURL(backgroundUrlRef.current)
-                backgroundUrlRef.current = null
-            }
-            if (image && artwork) {
-                backgroundSourceRef.current = { name: artwork.name, dataUrl: artwork.dataUrl }
-                setBackground(image)
-                setBackgroundName(artwork.name)
-            } else {
-                backgroundSourceRef.current = null
-                setBackground(null)
-                setBackgroundName("")
-            }
-
-            setDesign(nextDesign)
-            setSelection((current) => (current && current.kind !== "element" ? { kind: "element", id: "name" } : current))
-            setTemplateVersion((version) => version + 1)
-            setResult(null)
-            return warning
+    const drawOne = useCallback(
+        (
+            canvas: HTMLCanvasElement,
+            ctx: CanvasRenderingContext2D,
+            exportDesign: CertificateDesign,
+            recipient: Recipient,
+            opaque: boolean
+        ) => {
+            renderCertificate(ctx, exportDesign, recipient, background)
+            if (!opaque) return
+            ctx.save()
+            ctx.globalCompositeOperation = "destination-over"
+            ctx.fillStyle = "#FFFFFF"
+            ctx.fillRect(0, 0, canvas.width, canvas.height)
+            ctx.restore()
         },
-        []
+        [background]
     )
 
-    const downloadTemplate = useCallback(async () => {
-        setError("")
-        try {
-            const artwork = design.mode === "upload" ? await getBackgroundEmbed() : null
-            const json = serializeTemplate(design, artwork)
-            const stamp = new Date().toISOString().slice(0, 10)
-            downloadBlob(
-                new Blob([json], { type: "application/json" }),
-                `certificate-template-${stamp}.json`
-            )
-        } catch {
-            setError("Could not save the template. Please try again.")
-        }
-    }, [design, getBackgroundEmbed])
-
-    const handleTemplateFile = useCallback(
-        async (file: File) => {
-            setError("")
-            setNotice("")
-            if (file.size > MAX_TEMPLATE_FILE_BYTES) {
-                setError("That file is too large to be a certificate template.")
-                return
-            }
-            try {
-                const loaded = parseTemplate(await file.text())
-                const warning = await applyTemplate(loaded.design, loaded.background)
-                if (warning) setNotice(warning)
-            } catch (caught) {
-                setError(caught instanceof Error ? caught.message : "Could not open that template.")
-            }
-        },
-        [applyTemplate]
-    )
-
-    const resetDesign = useCallback(() => {
-        if (!window.confirm("Reset the whole design back to the defaults? Your current layout will be lost.")) {
-            return
-        }
-        if (backgroundUrlRef.current) {
-            URL.revokeObjectURL(backgroundUrlRef.current)
-            backgroundUrlRef.current = null
-        }
-        backgroundSourceRef.current = null
-        setBackground(null)
-        setBackgroundName("")
-        setDesign(createDefaultDesign())
-        setSelection({ kind: "element", id: "name" })
-        setTemplateVersion((version) => version + 1)
-        setNotice("")
-        setError("")
-        setResult(null)
-    }, [])
-
-    // Bring back whatever was being worked on before the page was refreshed.
-    useEffect(() => {
-        let cancelled = false
-        void (async () => {
-            const saved = loadAutosave()
-            if (saved) {
-                const warning = await applyTemplate(saved.design, saved.background)
-                if (warning && !cancelled) setNotice(warning)
-            }
-            if (!cancelled) setHydrated(true)
-        })()
-        return () => {
-            cancelled = true
-        }
-    }, [applyTemplate])
-
-    useEffect(() => {
-        designRef.current = design
-    }, [design])
-
-    // Canvas text never triggers a font download, so fetch the fonts the design uses and redraw once they arrive.
-    const fontSpecs = designFontSpecs(design).join("|")
-    useEffect(() => {
-        let cancelled = false
-        void loadDesignFonts(designRef.current).then((usedWebFont) => {
-            if (usedWebFont && !cancelled) setAssetVersion((version) => version + 1)
-        })
-        return () => {
-            cancelled = true
-        }
-    }, [fontSpecs])
-
-    useEffect(() => {
-        let cancelled = false
-        void loadDesignImages(designRef.current).then((loaded) => {
-            if (loaded && !cancelled) setAssetVersion((version) => version + 1)
-        })
-        return () => {
-            cancelled = true
-        }
-    }, [design.signatories, design.logos])
-
-    // Autosave shortly after each change, and once more as the page is left so nothing is lost.
-    useEffect(() => {
-        if (!hydrated) return
-        let cancelled = false
-        const timer = setTimeout(async () => {
-            let artwork: TemplateBackground | null = null
-            if (design.mode === "upload") {
-                try {
-                    artwork = await getBackgroundEmbed()
-                } catch {
-                    artwork = null
-                }
-            }
-            if (!cancelled) setAutosave(saveAutosave(design, artwork))
-        }, 600)
-        return () => {
-            cancelled = true
-            clearTimeout(timer)
-        }
-    }, [design, hydrated, background, getBackgroundEmbed])
-
-    useEffect(() => {
-        if (!hydrated) return
-        const flush = () => {
-            const current = designRef.current
-            const cached = backgroundSourceRef.current
-            const artwork =
-                current.mode === "upload" && cached?.dataUrl
-                    ? { name: cached.name, dataUrl: cached.dataUrl }
-                    : null
-            saveAutosave(current, artwork)
-        }
-        window.addEventListener("pagehide", flush)
-        return () => window.removeEventListener("pagehide", flush)
-    }, [hydrated])
-
-    useEffect(() => {
-        return () => {
-            if (backgroundUrlRef.current) URL.revokeObjectURL(backgroundUrlRef.current)
-        }
-    }, [])
-
-    /** Renders one certificate at full export resolution and returns its bytes. */
+    /** Renders one certificate as a PNG or JPEG and returns its bytes. */
     const renderOne = useCallback(
         async (
             canvas: HTMLCanvasElement,
@@ -624,16 +370,7 @@ export default function BulkGeneratePage() {
             recipient: Recipient,
             mimeType: string
         ): Promise<Uint8Array> => {
-            renderCertificate(ctx, exportDesign, recipient, background)
-
-            if (mimeType === "image/jpeg") {
-                // JPEG has no alpha channel: paint white behind anything transparent.
-                ctx.save()
-                ctx.globalCompositeOperation = "destination-over"
-                ctx.fillStyle = "#FFFFFF"
-                ctx.fillRect(0, 0, canvas.width, canvas.height)
-                ctx.restore()
-            }
+            drawOne(canvas, ctx, exportDesign, recipient, mimeType === "image/jpeg")
 
             const blob = await new Promise<Blob | null>((resolve) =>
                 canvas.toBlob(resolve, mimeType, mimeType === "image/jpeg" ? quality / 100 : undefined)
@@ -641,7 +378,27 @@ export default function BulkGeneratePage() {
             if (!blob) throw new Error("The browser could not encode the certificate image.")
             return new Uint8Array(await blob.arrayBuffer())
         },
-        [background, quality]
+        [drawOne, quality]
+    )
+
+    /** Renders one certificate as a single PDF page at the design's real print size. */
+    const renderPdfPage = useCallback(
+        async (
+            canvas: HTMLCanvasElement,
+            ctx: CanvasRenderingContext2D,
+            exportDesign: CertificateDesign,
+            recipient: Recipient,
+            page: { width: number; height: number }
+        ): Promise<PdfPage> => {
+            // A PDF page is paper: there is nothing behind it for transparency to show through.
+            drawOne(canvas, ctx, exportDesign, recipient, true)
+            return {
+                image: await encodeCanvasForPdf(canvas, pdfQuality),
+                width: page.width,
+                height: page.height,
+            }
+        },
+        [drawOne, pdfQuality]
     )
 
     const exportDesign = useMemo<CertificateDesign>(() => {
@@ -654,6 +411,12 @@ export default function BulkGeneratePage() {
         }
     }, [design, scale])
 
+    /**
+     * The sheet of paper a PDF page is. It comes from the design's own size, not the
+     * exported one: a higher resolution puts more pixels on the same piece of paper.
+     */
+    const pageSize = useMemo(() => pdfPageSize(design.width, design.height), [design.width, design.height])
+
     const downloadSampleCertificate = useCallback(async () => {
         setError("")
         try {
@@ -665,13 +428,19 @@ export default function BulkGeneratePage() {
             const ctx = canvas.getContext("2d")
             if (!ctx) throw new Error("Canvas is not available in this browser.")
 
+            if (format === "pdf") {
+                const page = await renderPdfPage(canvas, ctx, exportDesign, previewRecipient, pageSize)
+                downloadBlob(createPdf([page], { title: "Sample certificate" }), "sample-certificate.pdf")
+                return
+            }
+
             const mimeType = format === "png" ? "image/png" : "image/jpeg"
             const bytes = await renderOne(canvas, ctx, exportDesign, previewRecipient, mimeType)
             downloadBlob(new Blob([bytes as BlobPart], { type: mimeType }), `sample-certificate.${format}`)
         } catch (caught) {
             setError(caught instanceof Error ? caught.message : "Could not create the sample certificate.")
         }
-    }, [exportDesign, format, previewRecipient, renderOne])
+    }, [exportDesign, format, pageSize, previewRecipient, renderOne, renderPdfPage])
 
     const generate = useCallback(async () => {
         if (usable.length === 0) return
@@ -692,7 +461,10 @@ export default function BulkGeneratePage() {
             if (!ctx) throw new Error("Canvas is not available in this browser.")
 
             const mimeType = format === "png" ? "image/png" : "image/jpeg"
-            const extension = format === "png" ? "png" : "jpg"
+            const extension = format === "png" ? "png" : format === "jpeg" ? "jpg" : "pdf"
+            // One PDF holding everybody is downloaded on its own; everything else is zipped up.
+            const onePdf = format === "pdf" && pdfMode === "single"
+            const pdfPages: PdfPage[] = []
             const entries: ZipEntry[] = []
             const manifest: { index: number; name: string; file: string }[] = []
             const usedNames = new Map<string, number>()
@@ -705,15 +477,39 @@ export default function BulkGeneratePage() {
                 }
 
                 const recipient = withTweak(usable[i], tweaks[i])
-                const fileName = buildFileName(pattern, recipient, i + 1, extension, usedNames)
-                const data = await renderOne(canvas, ctx, exportDesign, recipient, mimeType)
 
-                entries.push({ name: fileName, data })
-                manifest.push({ index: i + 1, name: recipient.name, file: fileName })
+                if (format === "pdf") {
+                    const page = await renderPdfPage(canvas, ctx, exportDesign, recipient, pageSize)
+                    if (onePdf) {
+                        pdfPages.push(page)
+                    } else {
+                        const fileName = buildFileName(pattern, recipient, i + 1, extension, usedNames)
+                        entries.push({ name: fileName, data: createPdfBytes([page], { title: recipient.name }) })
+                        manifest.push({ index: i + 1, name: recipient.name, file: fileName })
+                    }
+                } else {
+                    const fileName = buildFileName(pattern, recipient, i + 1, extension, usedNames)
+                    const data = await renderOne(canvas, ctx, exportDesign, recipient, mimeType)
+                    entries.push({ name: fileName, data })
+                    manifest.push({ index: i + 1, name: recipient.name, file: fileName })
+                }
+
                 setProgress(i + 1)
 
                 // Hand the main thread back so the progress bar paints and the tab stays responsive.
                 if (i % 5 === 4) await new Promise((resolve) => setTimeout(resolve, 0))
+            }
+
+            const stamp = new Date().toISOString().slice(0, 10)
+
+            if (onePdf) {
+                const pdf = createPdf(pdfPages, { title: `Certificates (${pdfPages.length})` })
+                const pdfName = `certificates-${pdfPages.length}-${stamp}.pdf`
+
+                setResult({ blob: pdf, fileName: pdfName, count: pdfPages.length, kind: "pdf" })
+                setPhase("done")
+                downloadBlob(pdf, pdfName)
+                return
             }
 
             entries.push({
@@ -722,10 +518,9 @@ export default function BulkGeneratePage() {
             })
 
             const zip = createZip(entries)
-            const stamp = new Date().toISOString().slice(0, 10)
             const zipName = `certificates-${entries.length - 1}-${stamp}.zip`
 
-            setResult({ blob: zip, fileName: zipName, count: entries.length - 1 })
+            setResult({ blob: zip, fileName: zipName, count: entries.length - 1, kind: "zip" })
             setPhase("done")
             downloadBlob(zip, zipName)
         } catch (caught) {
@@ -736,9 +531,11 @@ export default function BulkGeneratePage() {
             )
             setPhase("idle")
         }
-    }, [usable, tweaks, exportDesign, format, pattern, renderOne])
+    }, [usable, tweaks, exportDesign, format, pageSize, pattern, pdfMode, renderOne, renderPdfPage])
 
     const progressPercent = usable.length > 0 ? Math.round((progress / usable.length) * 100) : 0
+    /** Everything lands in one PDF rather than a ZIP of separate files. */
+    const singlePdf = format === "pdf" && pdfMode === "single"
 
     return (
         <div className="min-h-screen min-h-[100dvh] bg-neo-mint text-black font-mono">
@@ -867,207 +664,7 @@ export default function BulkGeneratePage() {
                         <section className={cardClass}>
                             <StepHeading step={1} title="Design the certificate" hint="Start from a preset or drop in your own artwork." />
 
-                            <div className="grid grid-cols-2 gap-3 mb-5">
-                                <button
-                                    type="button"
-                                    onClick={() => background && clearBackground()}
-                                    className={`px-3 py-2.5 border-3 border-black font-black uppercase text-[11px] sm:text-xs transition-all ${design.mode === "builtin" ? "bg-black text-white shadow-none" : "bg-white shadow-neo hover:shadow-none hover:translate-x-1 hover:translate-y-1"}`}
-                                >
-                                    Built-in design
-                                </button>
-                                <label
-                                    className={`px-3 py-2.5 border-3 border-black font-black uppercase text-[11px] sm:text-xs text-center cursor-pointer transition-all ${design.mode === "upload" ? "bg-black text-white shadow-none" : "bg-white shadow-neo hover:shadow-none hover:translate-x-1 hover:translate-y-1"}`}
-                                >
-                                    Upload background
-                                    <input
-                                        type="file"
-                                        accept="image/png,image/jpeg,image/webp"
-                                        className="hidden"
-                                        onChange={(event) => {
-                                            const file = event.target.files?.[0]
-                                            if (file) handleBackgroundFile(file)
-                                            event.target.value = ""
-                                        }}
-                                    />
-                                </label>
-                            </div>
-
-                            {design.mode === "upload" ? (
-                                <div className="border-3 border-black bg-neo-cream p-4">
-                                    <p className="font-black text-xs uppercase mb-1">Background artwork</p>
-                                    <p className="font-bold text-sm break-all mb-1">{backgroundName}</p>
-                                    <p className="font-bold text-xs text-black/70 mb-3">
-                                        Exporting at {design.width} × {design.height} px
-                                    </p>
-                                    <p className="font-bold text-xs mb-3">
-                                        Drag the name on the preview to place it exactly where your artwork
-                                        leaves room for it. Turn on other elements in step 2 if you want them
-                                        drawn over the artwork too.
-                                    </p>
-                                    <button
-                                        type="button"
-                                        onClick={clearBackground}
-                                        className="px-4 py-2 border-3 border-black bg-white font-black uppercase text-xs shadow-neo hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all"
-                                    >
-                                        Remove image
-                                    </button>
-                                </div>
-                            ) : (
-                                <div className="space-y-4">
-                                    <div>
-                                        <span className={labelClass}>Style</span>
-                                        <div className="grid grid-cols-3 gap-2">
-                                            {PRESETS.map((preset) => (
-                                                <button
-                                                    key={preset.id}
-                                                    type="button"
-                                                    onClick={() =>
-                                                        setDesign((current) => applyPreset(current, preset.id))
-                                                    }
-                                                    className={`px-2 py-2 border-3 border-black font-black uppercase text-[11px] transition-all ${design.preset === preset.id ? "bg-neo-yellow shadow-none" : "bg-white shadow-neo hover:shadow-none hover:translate-x-1 hover:translate-y-1"}`}
-                                                >
-                                                    {preset.label}
-                                                </button>
-                                            ))}
-                                        </div>
-                                        <p className="font-bold text-[11px] text-black/60 mt-1.5">
-                                            Changing the style or page size resets where the text sits. Your
-                                            wording is kept.
-                                        </p>
-                                    </div>
-
-                                    <div>
-                                        <label className={labelClass} htmlFor="size-preset">
-                                            Page size
-                                        </label>
-                                        <select
-                                            id="size-preset"
-                                            className={inputClass}
-                                            value={`${design.width}x${design.height}`}
-                                            onChange={(event) => {
-                                                const preset = SIZE_PRESETS.find(
-                                                    (item) => `${item.width}x${item.height}` === event.target.value
-                                                )
-                                                if (preset) {
-                                                    setDesign((current) =>
-                                                        applyPageSize(current, preset.width, preset.height)
-                                                    )
-                                                }
-                                            }}
-                                        >
-                                            {SIZE_PRESETS.map((preset) => (
-                                                <option key={preset.id} value={`${preset.width}x${preset.height}`}>
-                                                    {preset.label}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-
-                                    <div className="grid grid-cols-3 gap-3">
-                                        {(
-                                            [
-                                                ["background", "Background"],
-                                                ["accent", "Accent"],
-                                                ["ink", "Text"],
-                                            ] as const
-                                        ).map(([key, label]) => (
-                                            <div key={key}>
-                                                <label className={labelClass} htmlFor={`color-${key}`}>
-                                                    {label}
-                                                </label>
-                                                <input
-                                                    id={`color-${key}`}
-                                                    type="color"
-                                                    value={design[key]}
-                                                    onChange={(event) => update(key, event.target.value)}
-                                                    className="w-full h-10 border-3 border-black bg-white cursor-pointer p-0.5"
-                                                />
-                                            </div>
-                                        ))}
-                                    </div>
-
-                                    <div>
-                                        <label className={labelClass} htmlFor="organization">
-                                            Organization / club name
-                                        </label>
-                                        <input
-                                            id="organization"
-                                            className={inputClass}
-                                            value={design.elements.organization.text}
-                                            onChange={(event) => updateText("organization", event.target.value)}
-                                            placeholder="Computer Science Club"
-                                        />
-                                    </div>
-
-                                    <div>
-                                        <label className={labelClass} htmlFor="heading">
-                                            Heading
-                                        </label>
-                                        <input
-                                            id="heading"
-                                            className={inputClass}
-                                            value={design.elements.heading.text}
-                                            onChange={(event) => updateText("heading", event.target.value)}
-                                            placeholder="Certificate of Participation"
-                                        />
-                                    </div>
-
-                                    <div>
-                                        <label className={labelClass} htmlFor="subheading">
-                                            Line above the name
-                                        </label>
-                                        <input
-                                            id="subheading"
-                                            className={inputClass}
-                                            value={design.elements.subheading.text}
-                                            onChange={(event) => updateText("subheading", event.target.value)}
-                                            placeholder="This is proudly presented to"
-                                        />
-                                    </div>
-
-                                    <div>
-                                        <label className={labelClass} htmlFor="body">
-                                            Body text
-                                        </label>
-                                        <textarea
-                                            id="body"
-                                            rows={3}
-                                            className={`${inputClass} resize-none`}
-                                            value={design.elements.body.text}
-                                            onChange={(event) => updateText("body", event.target.value)}
-                                            placeholder="for successfully completing..."
-                                        />
-                                    </div>
-
-                                    <div className="grid grid-cols-2 gap-3">
-                                        <div>
-                                            <label className={labelClass} htmlFor="left-label">
-                                                Date label
-                                            </label>
-                                            <input
-                                                id="left-label"
-                                                className={inputClass}
-                                                value={design.elements.dateLabel.text}
-                                                onChange={(event) => updateText("dateLabel", event.target.value)}
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className={labelClass} htmlFor="left-value">
-                                                Date
-                                            </label>
-                                            <input
-                                                id="left-value"
-                                                className={inputClass}
-                                                value={design.elements.date.text}
-                                                onChange={(event) => updateText("date", event.target.value)}
-                                            />
-                                        </div>
-                                    </div>
-                                    <p className="font-bold text-[11px] text-black/60">
-                                        Names, titles and signatures of the people signing are set in step 3.
-                                    </p>
-                                </div>
-                            )}
+                            <DesignBasics designer={designer} />
                         </section>
 
                         <section className={cardClass}>
@@ -1493,7 +1090,10 @@ export default function BulkGeneratePage() {
                             </section>
 
                             <section className={cardClass}>
-                                <StepHeading step={5} title="Download the ZIP" />
+                                <StepHeading
+                                    step={5}
+                                    title={singlePdf ? "Download the PDF" : "Download the ZIP"}
+                                />
 
                                 <div className="space-y-4">
                                     <div className="grid grid-cols-2 gap-3">
@@ -1506,11 +1106,12 @@ export default function BulkGeneratePage() {
                                                 className={inputClass}
                                                 value={format}
                                                 onChange={(event) =>
-                                                    setFormat(event.target.value === "jpeg" ? "jpeg" : "png")
+                                                    setFormat(event.target.value as ExportFormat)
                                                 }
                                             >
                                                 <option value="png">PNG · sharpest</option>
                                                 <option value="jpeg">JPG · smallest files</option>
+                                                <option value="pdf">PDF · ready to print</option>
                                             </select>
                                         </div>
                                         <div>
@@ -1549,6 +1150,50 @@ export default function BulkGeneratePage() {
                                         </div>
                                     ) : null}
 
+                                    {format === "pdf" ? (
+                                        <div className="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <label className={labelClass} htmlFor="pdf-mode">
+                                                    PDF layout
+                                                </label>
+                                                <select
+                                                    id="pdf-mode"
+                                                    className={inputClass}
+                                                    value={pdfMode}
+                                                    onChange={(event) =>
+                                                        setPdfMode(event.target.value === "each" ? "each" : "single")
+                                                    }
+                                                >
+                                                    <option value="single">One PDF · a page each</option>
+                                                    <option value="each">One PDF per person · in a ZIP</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className={labelClass} htmlFor="pdf-quality">
+                                                    Page quality
+                                                </label>
+                                                <select
+                                                    id="pdf-quality"
+                                                    className={inputClass}
+                                                    value={pdfQuality}
+                                                    onChange={(event) => setPdfQuality(Number(event.target.value))}
+                                                >
+                                                    {PDF_QUALITIES.map((option) => (
+                                                        <option key={option.value} value={option.value}>
+                                                            {option.label}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                            {design.mode === "upload" && pdfQuality === 100 ? (
+                                                <p className="col-span-2 font-bold text-[11px] text-black/60">
+                                                    Lossless keeps photographic artwork pixel for pixel, which makes
+                                                    much larger files. Pick High for a big batch.
+                                                </p>
+                                            ) : null}
+                                        </div>
+                                    ) : null}
+
                                     <div>
                                         <label className={labelClass} htmlFor="pattern">
                                             File name pattern
@@ -1561,7 +1206,9 @@ export default function BulkGeneratePage() {
                                             placeholder="{name}"
                                         />
                                         <p className="font-bold text-[11px] text-black/60 mt-1.5">
-                                            Use {"{name}"} and {"{index}"} · e.g. {"{index}-{name}"}
+                                            {singlePdf
+                                                ? "Every certificate is a page of one PDF, so the pattern is not used."
+                                                : `Use {name} and {index} · e.g. {index}-{name}`}
                                         </p>
                                     </div>
 
@@ -1569,6 +1216,7 @@ export default function BulkGeneratePage() {
                                         Exporting at {exportDesign.width} × {exportDesign.height} px ·{" "}
                                         {usable.length.toLocaleString()} certificate
                                         {usable.length === 1 ? "" : "s"}
+                                        {format === "pdf" ? ` · pages are ${pageSize.label}` : ""}
                                     </p>
 
                                     {phase === "working" ? (
@@ -1624,8 +1272,18 @@ export default function BulkGeneratePage() {
                                                 {result.fileName} · {formatBytes(result.blob.size)}
                                             </p>
                                             <p className="font-bold text-xs">
-                                                The ZIP also contains <span className="underline">_index.csv</span>{" "}
-                                                mapping every participant to their file.
+                                                {result.kind === "pdf" ? (
+                                                    <>
+                                                        One page per participant, {pageSize.label}, in the order of
+                                                        your list.
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        The ZIP also contains{" "}
+                                                        <span className="underline">_index.csv</span> mapping every
+                                                        participant to their file.
+                                                    </>
+                                                )}
                                             </p>
                                             <button
                                                 type="button"

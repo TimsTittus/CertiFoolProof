@@ -10,6 +10,7 @@ import {
     generateCertificateQRCode,
     buildVerificationUrl,
 } from "@/lib/certificate"
+import { SAMPLE_CERTIFICATE_ID } from "@/lib/certificate/verification-block"
 import { revalidatePath } from "next/cache"
 import { desc, eq } from "drizzle-orm"
 
@@ -132,6 +133,24 @@ export async function createCertificate(
     } catch (error) {
         console.error("Certificate creation error:", error)
         return { success: false, error: "Failed to create certificate" }
+    }
+}
+
+/**
+ * A QR code for the certificate designer to show while a certificate is only being
+ * designed. It points at a sample ID, so nothing can mistake it for a real one.
+ */
+export async function getSampleQRCode(): Promise<string> {
+    try {
+        const session = await auth.api.getSession({
+            headers: await headers()
+        })
+        if (!session?.user) return ""
+
+        return await generateCertificateQRCode(SAMPLE_CERTIFICATE_ID)
+    } catch (error) {
+        console.error("Sample QR code error:", error)
+        return ""
     }
 }
 
