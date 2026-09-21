@@ -7,6 +7,7 @@
  */
 
 import { ensureImages, getLoadedImage, getWhiteRemoved } from "./images"
+import { fillTokens, type NameNudge, type Recipient } from "./tokens"
 
 export type TemplateMode = "builtin" | "upload"
 export type PresetId = "classic" | "neo" | "minimal"
@@ -15,6 +16,12 @@ export type FontWeight = 300 | 400 | 700
 export type SignatureMode = "none" | "draw" | "type" | "image"
 export type LineStyle = "solid" | "dashed" | "dotted"
 export type SignatoryArrange = "auto" | "free"
+/**
+ * What happens to text that is wider than its element allows.
+ * "shrink" keeps one line and makes the type smaller (what the participant name has always done),
+ * "wrap" breaks it into lines at the element's width, and "wrapshrink" does both.
+ */
+export type TextFit = "shrink" | "wrap" | "wrapshrink"
 
 export type TextElementId =
     | "name"
@@ -86,10 +93,14 @@ export interface TextElement {
     underline: boolean
     /** In canvas pixels at the design's base resolution. */
     letterSpacing: number
-    /** Distance between wrapped lines, as a multiple of the font size. Only the body wraps. */
+    /** Distance between wrapped lines, as a multiple of the font size. */
     lineHeight: number
-    /** Text shrinks (or wraps, for the body) to fit this width. Percentage of canvas width. */
+    /** Text shrinks or wraps to fit this width, as `fit` decides. Percentage of canvas width. */
     maxWidth: number
+    /** How text longer than `maxWidth` is made to fit. */
+    fit: TextFit
+    /** Most lines a wrapping element may take. Ignored when the text only shrinks. */
+    maxLines: number
     /** 10 - 100. */
     opacity: number
     /** Shown on the built-in designs. */
@@ -249,6 +260,8 @@ export interface RenderedLayout {
     elements: Partial<Record<ElementId, ElementBox>>
     signatories: Record<string, SignatoryRender>
     logos: Record<string, ElementBox>
+    /** Elements whose text did not fit: it had to shrink, or lines had to be dropped. */
+    overflow: ElementId[]
 }
 
 export interface SizePreset {
@@ -312,6 +325,15 @@ export const MAX_COLUMNS = 6
 
 export const MIN_MAX_WIDTH = 5
 
+/** Most lines any wrapping element may take. */
+export const MAX_TEXT_LINES = 12
+
+export const TEXT_FIT_OPTIONS: { label: string; value: TextFit }[] = [
+    { label: "Shrink", value: "shrink" },
+    { label: "Wrap", value: "wrap" },
+    { label: "Wrap + shrink", value: "wrapshrink" },
+]
+
 const PRESET_FONTS: Record<PresetId, string> = {
     classic: "Georgia, 'Times New Roman', serif",
     neo: "'Courier New', Courier, monospace",
@@ -324,7 +346,7 @@ export const PRESET_PALETTES: Record<PresetId, { background: string; accent: str
     minimal: { background: "#FFFFFF", accent: "#2563EB", ink: "#111827" },
 }
 
-const MAX_BODY_LINES = 6
+const DEFAULT_MAX_LINES = 6
 const DEFAULT_LINE_HEIGHT = 1.55
 
 export function defaultDateText(): string {
@@ -360,6 +382,8 @@ function textElement(overrides: Partial<TextElement> & { font: string }): TextEl
         letterSpacing: 0,
         lineHeight: DEFAULT_LINE_HEIGHT,
         maxWidth: 90,
+        fit: "shrink",
+        maxLines: DEFAULT_MAX_LINES,
         opacity: 100,
         visible: true,
         visibleOnUpload: false,
@@ -529,6 +553,7 @@ export function createPresetElements(
                 weight: 700,
                 lineHeight: 40 / 25,
                 maxWidth: widthPct(width / u - 320),
+                fit: "wrap",
             }),
             ...footers,
         }
@@ -557,6 +582,7 @@ export function createPresetElements(
                 opacity: 80,
                 lineHeight: 40 / 26,
                 maxWidth: widthPct(width / u - 320),
+                fit: "wrap",
             }),
             ...footers,
         }
@@ -583,6 +609,7 @@ export function createPresetElements(
                 size: sizePct(27),
                 lineHeight: 42 / 27,
                 maxWidth: widthPct(width / u - 300),
+                fit: "wrap",
             }),
             ...footers,
         }
@@ -648,6 +675,9 @@ function relayout(design: CertificateDesign, preset: PresetId, width: number, he
         elements[id] = {
             ...fresh[id],
             text: current.text,
+            // How long text is made to fit belongs to the wording, so it survives a restyle.
+            fit: current.fit,
+            maxLines: current.maxLines,
             visible: current.visible,
             visibleOnUpload: current.visibleOnUpload,
         }
@@ -963,6 +993,8 @@ function wrapLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number
 
 interface TextGeometry {
     lines: string[]
+    /** True when the text had to be made smaller, or lines had to be dropped, to fit. */
+    overflowed: boolean
     /** The size actually drawn, after shrinking to fit. */
     fontPx: number
     /** The size that was asked for. Decorations keep their proportions to this, not to the shrunk size. */
@@ -983,7 +1015,7 @@ function layoutText(
     design: CertificateDesign,
     element: TextElement,
     rawText: string,
-    wrap: boolean
+    fit: TextFit
 ): TextGeometry {
     const { width: W, height: H } = design
     const text = element.uppercase ? rawText.toUpperCase() : rawText
@@ -996,6 +1028,7 @@ function layoutText(
         ctx.font = fontString(element, desired)
         return {
             lines: [],
+            overflowed: false,
             fontPx: desired,
             desiredPx: desired,
             maxWidthPx: maxWidth,
@@ -1007,26 +1040,47 @@ function layoutText(
         }
     }
 
+    const maxLines = Math.max(1, Math.round(element.maxLines || DEFAULT_MAX_LINES))
     let lines: string[]
     let fontPx: number
-    if (wrap) {
-        fontPx = desired
-        ctx.font = fontString(element, fontPx)
-        lines = wrapLines(ctx, text, maxWidth).slice(0, MAX_BODY_LINES)
-    } else {
+    let overflowed = false
+
+    if (fit === "shrink") {
         fontPx = fitFontSize(ctx, element, text, desired, maxWidth)
         lines = [text]
+        overflowed = fontPx < desired - 0.01
+    } else {
+        fontPx = desired
+        ctx.font = fontString(element, fontPx)
+        let wrapped = wrapLines(ctx, text, maxWidth)
+
+        if (fit === "wrapshrink") {
+            // Re-wrap at smaller and smaller sizes: shrinking fits more words on every line.
+            for (let i = 0; i < 8 && wrapped.length > maxLines && fontPx > desired * 0.25; i++) {
+                fontPx = Math.max(desired * 0.25, fontPx * 0.9)
+                ctx.font = fontString(element, fontPx)
+                wrapped = wrapLines(ctx, text, maxWidth)
+            }
+            overflowed = fontPx < desired - 0.01
+        }
+
+        if (wrapped.length > maxLines) {
+            wrapped = wrapped.slice(0, maxLines)
+            overflowed = true
+        }
+        lines = wrapped
     }
 
     const lineHeight = fontPx * element.lineHeight
     const textWidth = Math.max(...lines.map((line) => ctx.measureText(line).width))
     // A wrapping block is boxed at its full column so its width can be dragged.
-    const boxWidth = wrap ? maxWidth : textWidth
+    const boxWidth = fit === "shrink" ? textWidth : maxWidth
     const left =
         element.align === "left" ? anchorX : element.align === "center" ? anchorX - boxWidth / 2 : anchorX - boxWidth
 
     return {
         lines,
+        overflowed,
         fontPx,
         desiredPx: desired,
         maxWidthPx: maxWidth,
@@ -1119,8 +1173,15 @@ function drawDecoration(
 
 interface TextDrawOptions {
     color: string
-    wrap: boolean
+    fit: TextFit
     decorate: TextElementId | null
+}
+
+/** What one drawn text left behind: where it landed, and whether it had to give way to fit. */
+interface TextDrawResult {
+    /** Null when there was nothing to draw. */
+    box: ElementBox | null
+    overflowed: boolean
 }
 
 /** Draws text (fitted or wrapped) and any preset decoration. Returns the area it covers. */
@@ -1129,14 +1190,14 @@ function drawTextElement(
     design: CertificateDesign,
     element: TextElement,
     rawText: string,
-    { color, wrap, decorate }: TextDrawOptions
-): ElementBox | null {
+    { color, fit, decorate }: TextDrawOptions
+): TextDrawResult {
     ctx.save()
     // letterSpacing is not implemented by every browser; harmless where missing.
     const spacingCtx = ctx as CanvasRenderingContext2D & { letterSpacing?: string }
     spacingCtx.letterSpacing = `${element.letterSpacing}px`
 
-    const geometry = layoutText(ctx, design, element, rawText, wrap)
+    const geometry = layoutText(ctx, design, element, rawText, fit)
 
     if (decorate) drawDecoration(ctx, design, decorate, element, geometry)
 
@@ -1168,7 +1229,7 @@ function drawTextElement(
     }
 
     ctx.restore()
-    return geometry.box
+    return { box: geometry.box, overflowed: geometry.overflowed }
 }
 
 /** Draws a signature whose bottom centre is at (anchorX, anchorY), in canvas pixels. */
@@ -1191,7 +1252,7 @@ function drawSignatureArt(
             maxWidth: art.maxWidth,
             opacity: art.opacity,
         })
-        return drawTextElement(ctx, design, typed, art.text, { color: art.color, wrap: false, decorate: null })
+        return drawTextElement(ctx, design, typed, art.text, { color: art.color, fit: "shrink", decorate: null }).box
     }
 
     if (art.mode === "image") {
@@ -1335,9 +1396,10 @@ function drawSignatory(
             y: (baselineY / H) * 100,
             maxWidth: columnPercent,
         }
-        const box = drawTextElement(ctx, design, placed, text, {
+        // A signatory's name and title always shrink: wrapping one would run into the line below it.
+        const { box } = drawTextElement(ctx, design, placed, text, {
             color: resolveElementColor(design, id),
-            wrap: false,
+            fit: "shrink",
             decorate: null,
         })
         if (box) blockBoxes.push(box)
@@ -1442,19 +1504,42 @@ function drawMinimalFrame(ctx: CanvasRenderingContext2D, design: CertificateDesi
     ctx.fillRect(0, 0, 22 * u, H)
 }
 
+/** The wording one element carries for one recipient: their own override if they have one, with tokens filled. */
+export function elementTextFor(design: CertificateDesign, id: ElementId, recipient: Recipient): string {
+    const own = recipient.overrides?.[id]
+    const raw = own !== undefined ? own : id === "name" ? design.elements.name.text.trim() || "{name}" : design.elements[id].text
+    return fillTokens(raw, recipient)
+}
+
+/** Applies one recipient's manual tweak to the participant name. */
+export function nudgedNameElement(element: TextElement, nudge: NameNudge | undefined): TextElement {
+    if (!nudge || (nudge.dx === 0 && nudge.dy === 0 && nudge.scale === 1)) return element
+    const limits = sizeLimits()
+    const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+    return {
+        ...element,
+        x: clamp(element.x + nudge.dx, 0, 100),
+        y: clamp(element.y + nudge.dy, 0, 100),
+        size: clamp(element.size * nudge.scale, limits.min, limits.max),
+    }
+}
+
 /**
- * Draws one certificate for `name` into `ctx` and returns the area each element covers.
+ * Draws one certificate for `recipient` into `ctx` and returns the area each element covers.
+ * A plain name may be passed instead, for a preview with no list behind it.
  * The context is expected to already be sized to `design.width/height`.
  */
 export function renderCertificate(
     ctx: CanvasRenderingContext2D,
     design: CertificateDesign,
-    name: string,
+    recipient: Recipient | string,
     background?: CanvasImageSource | null
 ): RenderedLayout {
     const { width, height } = design
+    const who: Recipient =
+        typeof recipient === "string" ? { name: recipient, fields: { name: recipient, index: "1" } } : recipient
     const onArtwork = design.mode === "upload" && !!background
-    const layout: RenderedLayout = { elements: {}, signatories: {}, logos: {} }
+    const layout: RenderedLayout = { elements: {}, signatories: {}, logos: {}, overflow: [] }
 
     ctx.save()
     ctx.setTransform(1, 0, 0, 1, 0, 0)
@@ -1481,12 +1566,13 @@ export function renderCertificate(
     for (const id of DRAW_ORDER) {
         if (!isElementVisible(design, id, onArtwork)) continue
         const element = design.elements[id]
-        const box = drawTextElement(ctx, design, element, element.text, {
+        const drawn = drawTextElement(ctx, design, element, elementTextFor(design, id, who), {
             color: resolveElementColor(design, id),
-            wrap: id === "body",
+            fit: element.fit,
             decorate: onArtwork ? null : id,
         })
-        if (box) layout.elements[id] = box
+        if (drawn.box) layout.elements[id] = drawn.box
+        if (drawn.overflowed) layout.overflow.push(id)
     }
 
     const frames = resolveSignatoryFrames(design, onArtwork)
@@ -1494,12 +1580,14 @@ export function renderCertificate(
         layout.signatories[signatory.id] = drawSignatory(ctx, design, signatory, frames[index], onArtwork)
     })
 
-    const nameBox = drawTextElement(ctx, design, design.elements.name, name, {
+    const nameElement = nudgedNameElement(design.elements.name, who.nudge)
+    const drawnName = drawTextElement(ctx, design, nameElement, elementTextFor(design, "name", who), {
         color: resolveElementColor(design, "name"),
-        wrap: false,
+        fit: nameElement.fit,
         decorate: null,
     })
-    if (nameBox) layout.elements.name = nameBox
+    if (drawnName.box) layout.elements.name = drawnName.box
+    if (drawnName.overflowed) layout.overflow.push("name")
 
     ctx.restore()
     return layout
@@ -1509,14 +1597,14 @@ export function renderCertificate(
 export function renderToCanvas(
     canvas: HTMLCanvasElement,
     design: CertificateDesign,
-    name: string,
+    recipient: Recipient | string,
     background?: CanvasImageSource | null
 ): RenderedLayout | null {
     const ctx = canvas.getContext("2d")
     if (!ctx) return null
     if (canvas.width !== design.width) canvas.width = design.width
     if (canvas.height !== design.height) canvas.height = design.height
-    return renderCertificate(ctx, design, name, background)
+    return renderCertificate(ctx, design, recipient, background)
 }
 
 /** The distinct CSS font specs a design draws with, e.g. "italic 700 32px Georgia, serif". */

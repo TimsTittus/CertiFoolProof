@@ -5,7 +5,9 @@ import {
     ELEMENT_LABELS,
     FONT_OPTIONS,
     FONT_WEIGHTS,
+    MAX_TEXT_LINES,
     MIN_MAX_WIDTH,
+    TEXT_FIT_OPTIONS,
     getElement,
     isElementVisible,
     isSignatoryText,
@@ -16,7 +18,9 @@ import {
     type ElementId,
     type ElementPatch,
     type FontWeight,
+    type TextFit,
 } from "@/lib/bulk/renderer"
+import { ChoiceButtons, RangeField } from "./fields"
 import { checkboxClass, clamp, inputClass, labelClass } from "./ui"
 
 interface ElementPanelProps {
@@ -24,9 +28,11 @@ interface ElementPanelProps {
     selectedId: ElementId | null
     onSelect: (id: ElementId | null) => void
     onPatch: (id: ElementId, patch: ElementPatch) => void
+    /** Tokens the current list can fill, e.g. ["name", "email"]. Shown as a hint under the text boxes. */
+    tokens?: string[]
 }
 
-export function ElementPanel({ design, selectedId, onSelect, onPatch }: ElementPanelProps) {
+export function ElementPanel({ design, selectedId, onSelect, onPatch, tokens = [] }: ElementPanelProps) {
     const onArtwork = design.mode === "upload"
 
     return (
@@ -64,6 +70,7 @@ export function ElementPanel({ design, selectedId, onSelect, onPatch }: ElementP
                     id={selectedId}
                     onArtwork={onArtwork}
                     onPatch={onPatch}
+                    tokens={tokens}
                 />
             ) : (
                 <p className="border-3 border-dashed border-black bg-neo-cream p-4 font-bold text-xs">
@@ -80,13 +87,17 @@ interface ElementFieldsProps {
     id: ElementId
     onArtwork: boolean
     onPatch: (id: ElementId, patch: ElementPatch) => void
+    tokens: string[]
 }
 
-function ElementFields({ design, id, onArtwork, onPatch }: ElementFieldsProps) {
+function ElementFields({ design, id, onArtwork, onPatch, tokens }: ElementFieldsProps) {
     const element = getElement(design, id)
     const isName = id === "name"
     const isBody = id === "body"
     const isSignatoryStyle = isSignatoryText(id)
+    /** A signatory's name and title always shrink, so the choice is not offered for them. */
+    const canWrap = !isSignatoryStyle
+    const wraps = canWrap && element.fit !== "shrink"
     const patch = (change: ElementPatch) => onPatch(id, change)
     const limits = sizeLimits()
     const fieldId = (suffix: string) => `el-${id}-${suffix}`
@@ -122,14 +133,10 @@ function ElementFields({ design, id, onArtwork, onPatch }: ElementFieldsProps) {
                     This style applies to the {id === "signatureName" ? "name" : "title"} of every signatory. Type
                     their wording, and place them, in the Signatories step below.
                 </p>
-            ) : isName ? (
-                <p className="font-bold text-xs bg-white border-3 border-black p-3">
-                    Each certificate gets its own participant&apos;s name here. Style and place it below.
-                </p>
             ) : (
                 <div>
                     <label className={labelClass} htmlFor={fieldId("text")}>
-                        Text
+                        {isName ? "Name pattern (optional)" : "Text"}
                     </label>
                     {isBody ? (
                         <textarea
@@ -144,9 +151,18 @@ function ElementFields({ design, id, onArtwork, onPatch }: ElementFieldsProps) {
                             id={fieldId("text")}
                             className={inputClass}
                             value={element.text}
+                            placeholder={isName ? "{name}" : undefined}
                             onChange={(event) => patch({ text: event.target.value })}
                         />
                     )}
+                    {isName ? (
+                        <p className="font-bold text-[11px] text-black/60 mt-1.5">
+                            Leave this empty for just the participant&apos;s name. Write something like{" "}
+                            <span className="text-black">Mr./Ms. {"{name}"}</span> to wrap every name in the
+                            same wording.
+                        </p>
+                    ) : null}
+                    <TokenHint tokens={tokens} />
                 </div>
             )}
 
@@ -281,7 +297,7 @@ function ElementFields({ design, id, onArtwork, onPatch }: ElementFieldsProps) {
                     {!isSignatoryStyle ? (
                         <div>
                             <label className={labelClass} htmlFor={fieldId("width")}>
-                                {isBody ? "Wrap width" : "Max width"} · {Math.round(element.maxWidth)}%
+                                {wraps ? "Wrap width" : "Max width"} · {Math.round(element.maxWidth)}%
                             </label>
                             <input
                                 id={fieldId("width")}
@@ -313,7 +329,7 @@ function ElementFields({ design, id, onArtwork, onPatch }: ElementFieldsProps) {
                             className="w-full accent-black"
                         />
                     </div>
-                    {isBody ? (
+                    {wraps ? (
                         <div>
                             <label className={labelClass} htmlFor={fieldId("leading")}>
                                 Line spacing · {element.lineHeight.toFixed(2)}
@@ -331,6 +347,36 @@ function ElementFields({ design, id, onArtwork, onPatch }: ElementFieldsProps) {
                         </div>
                     ) : null}
                 </div>
+
+                {canWrap ? (
+                    <div className="space-y-3 border-t-3 border-black/20 pt-3">
+                        <ChoiceButtons<TextFit>
+                            label="Text that is too long"
+                            value={element.fit}
+                            options={TEXT_FIT_OPTIONS}
+                            onChange={(fit) => patch({ fit })}
+                        />
+                        <p className="font-bold text-[11px] text-black/60">
+                            {element.fit === "shrink"
+                                ? "Stays on one line and gets smaller until it fits the width above."
+                                : element.fit === "wrap"
+                                    ? "Breaks into lines at the width above, keeping the size you chose."
+                                    : "Breaks into lines, then gets smaller until it fits inside the lines allowed."}
+                        </p>
+                        {wraps ? (
+                            <RangeField
+                                id={fieldId("lines")}
+                                label="Lines allowed"
+                                display={String(Math.round(element.maxLines))}
+                                value={element.maxLines}
+                                min={1}
+                                max={MAX_TEXT_LINES}
+                                step={1}
+                                onChange={(maxLines) => patch({ maxLines })}
+                            />
+                        ) : null}
+                    </div>
+                ) : null}
             </div>
 
             {!isSignatoryStyle ? (
@@ -401,5 +447,16 @@ function ElementFields({ design, id, onArtwork, onPatch }: ElementFieldsProps) {
                 </div>
             )}
         </div>
+    )
+}
+
+/** Lists the tokens the current participant list can fill, so wording can be personalised. */
+function TokenHint({ tokens }: { tokens: string[] }) {
+    if (tokens.length === 0) return null
+    return (
+        <p className="font-bold text-[11px] text-black/60 mt-1.5">
+            Tokens you can use here:{" "}
+            <span className="text-black">{tokens.map((token) => `{${token}}`).join(" ")}</span>
+        </p>
     )
 }

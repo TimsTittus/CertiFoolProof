@@ -3,11 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import {
+    ELEMENT_IDS,
+    ELEMENT_LABELS,
     SIZE_PRESETS,
+    TEXT_ELEMENT_IDS,
     applyPageSize,
     applyPreset,
     createDefaultDesign,
     designFontSpecs,
+    isSignatoryText,
     loadDesignFonts,
     loadDesignImages,
     patchElement,
@@ -20,11 +24,21 @@ import {
     type TextElementId,
 } from "@/lib/bulk/renderer"
 import {
-    extractNames,
+    NAME_NUDGE_ZERO,
+    createRecipient,
+    findTokens,
+    isNudged,
+    type NameNudge,
+    type Recipient,
+} from "@/lib/bulk/tokens"
+import {
+    buildRecipients,
+    columnKeys,
     guessNameColumn,
     looksLikeHeader,
     parseCsv,
     parseNameList,
+    recipientsFromNames,
 } from "@/lib/bulk/csv"
 import { buildFileName, buildIndexCsv, downloadBlob, formatBytes } from "@/lib/bulk/export"
 import { createZip, type ZipEntry } from "@/lib/bulk/zip"
@@ -37,10 +51,11 @@ import {
     type TemplateBackground,
 } from "@/lib/bulk/template"
 import { ElementPanel } from "./element-panel"
+import { NumberField, RangeField } from "./fields"
 import { LogoPanel } from "./logo-panel"
 import { PreviewStage } from "./preview-stage"
 import { SignatoryPanel } from "./signatory-panel"
-import { buttonClass, cardClass, inputClass, labelClass, smallButtonClass } from "./ui"
+import { buttonClass, cardClass, clamp, inputClass, labelClass, smallButtonClass } from "./ui"
 
 /** Keeps a single batch inside what a browser tab can comfortably hold in memory. */
 const MAX_NAMES = 5000
@@ -97,6 +112,39 @@ interface GenerationResult {
     count: number
 }
 
+/** What has been changed by hand for one recipient only. */
+interface RowTweak {
+    /** Wording that replaces an element's own text on this certificate. */
+    text?: Partial<Record<ElementId, string>>
+    /** A manual shift of the participant name on this certificate. */
+    nudge?: NameNudge
+}
+
+/** Elements whose wording can be overridden for a single recipient. */
+const OVERRIDABLE_IDS: ElementId[] = ELEMENT_IDS.filter((id) => !isSignatoryText(id))
+
+/** How far one tap of a nudge arrow moves the name, in percent of the page. */
+const NUDGE_STEP = 0.5
+
+const round2 = (value: number) => Math.round(value * 100) / 100
+
+const PLACEHOLDER_RECIPIENT = createRecipient("Participant Name", 1)
+
+function hasTweak(tweak: RowTweak | undefined): boolean {
+    if (!tweak) return false
+    return isNudged(tweak.nudge) || Object.values(tweak.text ?? {}).some((value) => value !== undefined)
+}
+
+/** Hands the renderer one recipient with their own wording and nudge folded in. */
+function withTweak(recipient: Recipient, tweak: RowTweak | undefined): Recipient {
+    if (!hasTweak(tweak)) return recipient
+    return {
+        ...recipient,
+        overrides: tweak?.text as Record<string, string> | undefined,
+        nudge: isNudged(tweak?.nudge) ? tweak?.nudge : undefined,
+    }
+}
+
 function StepHeading({ step, title, hint }: { step: number; title: string; hint?: string }) {
     return (
         <div className="mb-5 flex items-start gap-3">
@@ -132,6 +180,14 @@ export default function BulkGeneratePage() {
     const [source, setSource] = useState<NameSource>("csv")
     const [csv, setCsv] = useState<CsvState | null>(null)
     const [pasted, setPasted] = useState("")
+    /** Which recipient the preview is standing on. */
+    const [previewIndex, setPreviewIndex] = useState(0)
+    /** Hand-made changes for one recipient only, keyed by their position in the list. */
+    const [tweaks, setTweaks] = useState<Record<number, RowTweak>>({})
+    /** Which element the tweak editor is pointed at. */
+    const [overrideId, setOverrideId] = useState<ElementId>("name")
+    /** Ids of the elements whose text did not fit on the previewed certificate. */
+    const [overflowIds, setOverflowIds] = useState("")
 
     const [format, setFormat] = useState<"png" | "jpeg">("png")
     const [quality, setQuality] = useState(92)
@@ -164,15 +220,129 @@ export default function BulkGeneratePage() {
         []
     )
 
-    const names = useMemo(() => {
-        if (source === "paste") return parseNameList(pasted)
+    const recipients = useMemo(() => {
+        if (source === "paste") return recipientsFromNames(parseNameList(pasted))
         if (!csv) return []
-        return extractNames(csv.rows, csv.column, csv.hasHeader)
+        return buildRecipients(csv.rows, csv.column, csv.hasHeader)
     }, [source, pasted, csv])
 
-    const tooMany = names.length > MAX_NAMES
-    const usableNames = useMemo(() => names.slice(0, MAX_NAMES), [names])
-    const previewName = usableNames[0] || "Participant Name"
+    const tooMany = recipients.length > MAX_NAMES
+    const usable = useMemo(() => recipients.slice(0, MAX_NAMES), [recipients])
+
+    /** The tokens this list can fill. `{name}` and `{index}` always work. */
+    const tokenKeys = useMemo(() => {
+        if (source === "paste" || !csv) return ["name", "index"]
+        const extra = columnKeys(csv.rows, csv.hasHeader).filter(
+            (key: string) => key && key !== "name" && key !== "index"
+        )
+        return ["name", "index", ...extra]
+    }, [source, csv])
+
+    /** Tokens written into the design or the file name that nothing in the list can fill. */
+    const unknownTokens = useMemo(() => {
+        const known = new Set(tokenKeys)
+        const unknown: string[] = []
+        const scan = (text: string) => {
+            for (const token of findTokens(text)) {
+                if (!known.has(token) && !unknown.includes(token)) unknown.push(token)
+            }
+        }
+        for (const id of TEXT_ELEMENT_IDS) scan(design.elements[id].text)
+        for (const tweak of Object.values(tweaks)) {
+            for (const text of Object.values(tweak.text ?? {})) if (text) scan(text)
+        }
+        scan(pattern)
+        return unknown
+    }, [design.elements, tokenKeys, tweaks, pattern])
+
+    // The index is kept in range here rather than in state, so a shorter list can never point past its end.
+    const safeIndex = usable.length > 0 ? Math.min(previewIndex, usable.length - 1) : 0
+    const previewTweak = tweaks[safeIndex]
+    const baseRecipient = usable[safeIndex] ?? PLACEHOLDER_RECIPIENT
+    const previewRecipient = useMemo(
+        () => withTweak(baseRecipient, previewTweak),
+        [baseRecipient, previewTweak]
+    )
+    const previewName = baseRecipient.name
+
+    /** The recipient with the longest name: the one most likely to overflow. */
+    const longestIndex = useMemo(() => {
+        let best = 0
+        for (let i = 1; i < usable.length; i++) {
+            if (usable[i].name.length > usable[best].name.length) best = i
+        }
+        return best
+    }, [usable])
+
+    const stepPreview = useCallback(
+        (delta: number) => {
+            setPreviewIndex((current) => {
+                if (usable.length === 0) return 0
+                const from = Math.min(current, usable.length - 1)
+                return (from + delta + usable.length) % usable.length
+            })
+        },
+        [usable.length]
+    )
+
+    /** Changes what has been tweaked for the recipient currently in the preview. */
+    const patchTweak = useCallback(
+        (index: number, change: (tweak: RowTweak) => RowTweak) => {
+            setTweaks((current) => {
+                const next = change(current[index] ?? {})
+                if (!hasTweak(next)) {
+                    if (!current[index]) return current
+                    const copy = { ...current }
+                    delete copy[index]
+                    return copy
+                }
+                return { ...current, [index]: next }
+            })
+        },
+        []
+    )
+
+    /** A new list means the old per-recipient tweaks no longer point at anybody. */
+    const resetRecipientState = useCallback(() => {
+        setTweaks({})
+        setPreviewIndex(0)
+    }, [])
+
+    const nudge = previewTweak?.nudge ?? NAME_NUDGE_ZERO
+
+    const setNudge = useCallback(
+        (next: NameNudge) => {
+            patchTweak(safeIndex, (tweak) => ({ ...tweak, nudge: next }))
+        },
+        [patchTweak, safeIndex]
+    )
+
+    const nudgePreview = useCallback(
+        (dx: number, dy: number) => {
+            patchTweak(safeIndex, (tweak) => {
+                const current = tweak.nudge ?? NAME_NUDGE_ZERO
+                return {
+                    ...tweak,
+                    nudge: {
+                        ...current,
+                        dx: round2(clamp(current.dx + dx, -50, 50)),
+                        dy: round2(clamp(current.dy + dy, -50, 50)),
+                    },
+                }
+            })
+        },
+        [patchTweak, safeIndex]
+    )
+
+    /** Plain names for the "did not fit" warning under the preview. */
+    const overflowLabels = useMemo(
+        () =>
+            overflowIds
+                .split(",")
+                .filter((id): id is ElementId => id.length > 0 && id in ELEMENT_LABELS)
+                .map((id) => ELEMENT_LABELS[id]),
+        [overflowIds]
+    )
 
     const columnOptions = useMemo(() => {
         if (!csv || csv.rows.length === 0) return []
@@ -186,6 +356,7 @@ export default function BulkGeneratePage() {
     const handleCsvFile = useCallback(async (file: File) => {
         setError("")
         setResult(null)
+        resetRecipientState()
         try {
             const text = await file.text()
             const { rows } = parseCsv(text)
@@ -199,7 +370,7 @@ export default function BulkGeneratePage() {
         } catch {
             setError("Could not read that file. Please upload a plain .csv or .txt file.")
         }
-    }, [])
+    }, [resetRecipientState])
 
     const downloadSampleCsv = useCallback(() => {
         const sample =
@@ -450,10 +621,10 @@ export default function BulkGeneratePage() {
             canvas: HTMLCanvasElement,
             ctx: CanvasRenderingContext2D,
             exportDesign: CertificateDesign,
-            name: string,
+            recipient: Recipient,
             mimeType: string
         ): Promise<Uint8Array> => {
-            renderCertificate(ctx, exportDesign, name, background)
+            renderCertificate(ctx, exportDesign, recipient, background)
 
             if (mimeType === "image/jpeg") {
                 // JPEG has no alpha channel: paint white behind anything transparent.
@@ -495,15 +666,15 @@ export default function BulkGeneratePage() {
             if (!ctx) throw new Error("Canvas is not available in this browser.")
 
             const mimeType = format === "png" ? "image/png" : "image/jpeg"
-            const bytes = await renderOne(canvas, ctx, exportDesign, previewName, mimeType)
+            const bytes = await renderOne(canvas, ctx, exportDesign, previewRecipient, mimeType)
             downloadBlob(new Blob([bytes as BlobPart], { type: mimeType }), `sample-certificate.${format}`)
         } catch (caught) {
             setError(caught instanceof Error ? caught.message : "Could not create the sample certificate.")
         }
-    }, [exportDesign, format, previewName, renderOne])
+    }, [exportDesign, format, previewRecipient, renderOne])
 
     const generate = useCallback(async () => {
-        if (usableNames.length === 0) return
+        if (usable.length === 0) return
 
         setError("")
         setResult(null)
@@ -526,19 +697,19 @@ export default function BulkGeneratePage() {
             const manifest: { index: number; name: string; file: string }[] = []
             const usedNames = new Map<string, number>()
 
-            for (let i = 0; i < usableNames.length; i++) {
+            for (let i = 0; i < usable.length; i++) {
                 if (cancelRef.current) {
                     setPhase("idle")
                     setProgress(0)
                     return
                 }
 
-                const name = usableNames[i]
-                const fileName = buildFileName(pattern, name, i + 1, extension, usedNames)
-                const data = await renderOne(canvas, ctx, exportDesign, name, mimeType)
+                const recipient = withTweak(usable[i], tweaks[i])
+                const fileName = buildFileName(pattern, recipient, i + 1, extension, usedNames)
+                const data = await renderOne(canvas, ctx, exportDesign, recipient, mimeType)
 
                 entries.push({ name: fileName, data })
-                manifest.push({ index: i + 1, name, file: fileName })
+                manifest.push({ index: i + 1, name: recipient.name, file: fileName })
                 setProgress(i + 1)
 
                 // Hand the main thread back so the progress bar paints and the tab stays responsive.
@@ -565,10 +736,9 @@ export default function BulkGeneratePage() {
             )
             setPhase("idle")
         }
-    }, [usableNames, exportDesign, format, pattern, renderOne])
+    }, [usable, tweaks, exportDesign, format, pattern, renderOne])
 
-    const progressPercent =
-        usableNames.length > 0 ? Math.round((progress / usableNames.length) * 100) : 0
+    const progressPercent = usable.length > 0 ? Math.round((progress / usable.length) * 100) : 0
 
     return (
         <div className="min-h-screen min-h-[100dvh] bg-neo-mint text-black font-mono">
@@ -650,7 +820,7 @@ export default function BulkGeneratePage() {
 
                 {tooMany ? (
                     <div className="mb-6 p-4 border-3 border-black bg-neo-yellow font-black text-sm shadow-neo">
-                        Your list has {names.length.toLocaleString()} names. Only the first{" "}
+                        Your list has {recipients.length.toLocaleString()} names. Only the first{" "}
                         {MAX_NAMES.toLocaleString()} will be generated in this batch - split the file and run
                         it again for the rest.
                     </div>
@@ -912,6 +1082,7 @@ export default function BulkGeneratePage() {
                                 selectedId={selection?.kind === "element" ? selection.id : null}
                                 onSelect={selectElement}
                                 onPatch={patchDesignElement}
+                                tokens={tokenKeys}
                             />
                         </section>
 
@@ -966,7 +1137,10 @@ export default function BulkGeneratePage() {
                                     <button
                                         key={value}
                                         type="button"
-                                        onClick={() => setSource(value)}
+                                        onClick={() => {
+                                            if (value !== source) resetRecipientState()
+                                            setSource(value)
+                                        }}
                                         className={`px-3 py-2.5 border-3 border-black font-black uppercase text-[11px] sm:text-xs transition-all ${source === value ? "bg-black text-white shadow-none" : "bg-white shadow-neo hover:shadow-none hover:translate-x-1 hover:translate-y-1"}`}
                                     >
                                         {label}
@@ -1011,9 +1185,10 @@ export default function BulkGeneratePage() {
                                                 <input
                                                     type="checkbox"
                                                     checked={csv.hasHeader}
-                                                    onChange={(event) =>
+                                                    onChange={(event) => {
+                                                        resetRecipientState()
                                                         setCsv({ ...csv, hasHeader: event.target.checked })
-                                                    }
+                                                    }}
                                                     className="w-5 h-5 border-3 border-black accent-black"
                                                 />
                                                 First row is a header
@@ -1027,9 +1202,10 @@ export default function BulkGeneratePage() {
                                                     id="name-column"
                                                     className={inputClass}
                                                     value={csv.column}
-                                                    onChange={(event) =>
+                                                    onChange={(event) => {
+                                                        resetRecipientState()
                                                         setCsv({ ...csv, column: Number(event.target.value) })
-                                                    }
+                                                    }}
                                                 >
                                                     {columnOptions.map((option) => (
                                                         <option key={option.index} value={option.index}>
@@ -1051,24 +1227,58 @@ export default function BulkGeneratePage() {
                                 />
                             )}
 
-                            {names.length > 0 ? (
+                            {recipients.length > 0 ? (
                                 <div className="mt-4 border-3 border-black bg-white p-4">
                                     <p className="font-black uppercase text-sm mb-2">
-                                        {names.length.toLocaleString()} name
-                                        {names.length === 1 ? "" : "s"} detected
+                                        {recipients.length.toLocaleString()} name
+                                        {recipients.length === 1 ? "" : "s"} detected
                                     </p>
                                     <ul className="font-bold text-xs space-y-1">
-                                        {usableNames.slice(0, 5).map((name, index) => (
-                                            <li key={`${name}-${index}`} className="truncate">
-                                                {index + 1}. {name}
+                                        {usable.slice(0, 5).map((recipient: Recipient, index: number) => (
+                                            <li key={`${recipient.name}-${index}`} className="truncate">
+                                                {index + 1}. {recipient.name}
                                             </li>
                                         ))}
                                     </ul>
-                                    {usableNames.length > 5 ? (
+                                    {usable.length > 5 ? (
                                         <p className="font-bold text-xs text-black/60 mt-2">
-                                            + {(usableNames.length - 5).toLocaleString()} more
+                                            + {(usable.length - 5).toLocaleString()} more
                                         </p>
                                     ) : null}
+
+                                    <div className="mt-4 border-t-3 border-black pt-3">
+                                        <p className="font-black uppercase text-[11px] mb-2">
+                                            Tokens from this list
+                                        </p>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {tokenKeys.map((token) => (
+                                                <span
+                                                    key={token}
+                                                    className="px-2 py-1 border-3 border-black bg-neo-cream font-black text-[11px]"
+                                                >
+                                                    {`{${token}}`}
+                                                </span>
+                                            ))}
+                                        </div>
+                                        <p className="font-bold text-[11px] text-black/60 mt-2">
+                                            Write a token into any text in step 2 and every certificate gets that
+                                            person&apos;s own value. {"{index}"} is their place in this batch.
+                                            {source === "paste"
+                                                ? " Upload a CSV instead to bring in columns such as course or score."
+                                                : null}
+                                        </p>
+                                    </div>
+                                </div>
+                            ) : null}
+
+                            {unknownTokens.length > 0 ? (
+                                <div className="mt-4 border-3 border-black bg-neo-yellow p-3 font-bold text-xs">
+                                    Nothing in your list fills{" "}
+                                    <span className="font-black">
+                                        {unknownTokens.map((token) => `{${token}}`).join(" ")}
+                                    </span>
+                                    . It is left as it is on the certificate, so either add that column to your CSV
+                                    or take the token out of the text.
                                 </div>
                             ) : null}
                         </section>
@@ -1086,18 +1296,200 @@ export default function BulkGeneratePage() {
                                 <div className="border-3 border-black bg-neo-cream p-2 shadow-neo">
                                     <PreviewStage
                                         design={design}
-                                        name={previewName}
+                                        recipient={previewRecipient}
                                         background={background}
                                         selection={selection}
                                         onSelect={setSelection}
                                         onPatch={patchDesignElement}
                                         onUpdate={setDesign}
                                         assetVersion={assetVersion}
+                                        onOverflow={setOverflowIds}
                                     />
                                 </div>
-                                <p className="font-bold text-xs text-black/70 mt-3">
-                                    Showing: <span className="text-black">{previewName}</span>
-                                </p>
+
+                                <div className="mt-3 flex items-stretch gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setPreviewIndex(0)}
+                                        disabled={usable.length < 2}
+                                        aria-label="First recipient"
+                                        title="First recipient"
+                                        className={`${smallButtonClass} px-2.5`}
+                                    >
+                                        |◀
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => stepPreview(-1)}
+                                        disabled={usable.length < 2}
+                                        aria-label="Previous recipient"
+                                        title="Previous recipient"
+                                        className={`${smallButtonClass} px-2.5`}
+                                    >
+                                        ◀
+                                    </button>
+                                    <div className="flex-1 min-w-0 border-3 border-black bg-neo-cream px-3 py-1.5">
+                                        <p className="font-black text-xs truncate">{previewName}</p>
+                                        <p className="font-bold text-[11px] text-black/60">
+                                            {usable.length > 0
+                                                ? `${safeIndex + 1} of ${usable.length.toLocaleString()}${hasTweak(previewTweak) ? " · tweaked" : ""}`
+                                                : "Sample name - add participants in step 4"}
+                                        </p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => stepPreview(1)}
+                                        disabled={usable.length < 2}
+                                        aria-label="Next recipient"
+                                        title="Next recipient"
+                                        className={`${smallButtonClass} px-2.5`}
+                                    >
+                                        ▶
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setPreviewIndex(longestIndex)}
+                                        disabled={usable.length < 2}
+                                        title="Jump to the longest name"
+                                        className={smallButtonClass}
+                                    >
+                                        Longest
+                                    </button>
+                                </div>
+
+                                {overflowLabels.length > 0 ? (
+                                    <p className="mt-3 border-3 border-black bg-neo-yellow p-3 font-bold text-xs">
+                                        Did not fit as set: {overflowLabels.join(", ")}. It was made smaller or cut
+                                        short to stay inside its width - widen it, shrink the type, or let it wrap in
+                                        step 2.
+                                    </p>
+                                ) : null}
+
+                                {usable.length > 0 ? (
+                                    <div className="mt-4 border-3 border-black bg-neo-cream p-4 space-y-4">
+                                        <div className="flex items-center justify-between gap-3 flex-wrap">
+                                            <h3 className="font-black uppercase italic text-sm">
+                                                Only for {previewName}
+                                            </h3>
+                                            {hasTweak(previewTweak) ? (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setTweaks((current) => {
+                                                        const copy = { ...current }
+                                                        delete copy[safeIndex]
+                                                        return copy
+                                                    })}
+                                                    className="font-black uppercase text-[10px] underline decoration-2 underline-offset-2"
+                                                >
+                                                    Reset this recipient
+                                                </button>
+                                            ) : null}
+                                        </div>
+
+                                        <div>
+                                            <label className={labelClass} htmlFor="override-element">
+                                                Different wording for this certificate
+                                            </label>
+                                            <select
+                                                id="override-element"
+                                                className={`${inputClass} mb-2`}
+                                                value={overrideId}
+                                                onChange={(event) => setOverrideId(event.target.value as ElementId)}
+                                            >
+                                                {OVERRIDABLE_IDS.map((id) => (
+                                                    <option key={id} value={id}>
+                                                        {ELEMENT_LABELS[id]}
+                                                        {previewTweak?.text?.[id] !== undefined ? " · changed" : ""}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            <input
+                                                id="override-text"
+                                                className={inputClass}
+                                                value={previewTweak?.text?.[overrideId] ?? ""}
+                                                placeholder={
+                                                    overrideId === "name"
+                                                        ? design.elements.name.text || "{name}"
+                                                        : design.elements[overrideId].text || "(empty)"
+                                                }
+                                                onChange={(event) => {
+                                                    const value = event.target.value
+                                                    patchTweak(safeIndex, (tweak) => {
+                                                        const text = { ...tweak.text }
+                                                        if (value === "") delete text[overrideId]
+                                                        else text[overrideId] = value
+                                                        return { ...tweak, text }
+                                                    })
+                                                }}
+                                            />
+                                            <p className="font-bold text-[11px] text-black/60 mt-1.5">
+                                                Leave it empty to keep what the design says. Tokens work here too, so
+                                                one runner-up can read {"Runner-up · {course}"} while everyone else
+                                                keeps the usual wording.
+                                            </p>
+                                        </div>
+
+                                        <div className="border-t-3 border-black/20 pt-3">
+                                            <span className={labelClass}>Nudge this name</span>
+                                            <div className="flex flex-wrap items-center gap-2 mb-3">
+                                                {(
+                                                    [
+                                                        ["←", -NUDGE_STEP, 0, "Move the name left"],
+                                                        ["↑", 0, -NUDGE_STEP, "Move the name up"],
+                                                        ["↓", 0, NUDGE_STEP, "Move the name down"],
+                                                        ["→", NUDGE_STEP, 0, "Move the name right"],
+                                                    ] as const
+                                                ).map(([glyph, dx, dy, label]) => (
+                                                    <button
+                                                        key={glyph}
+                                                        type="button"
+                                                        aria-label={label}
+                                                        title={label}
+                                                        onClick={() => nudgePreview(dx, dy)}
+                                                        className={`${smallButtonClass} px-3`}
+                                                    >
+                                                        {glyph}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-3">
+                                                <NumberField
+                                                    id="nudge-dx"
+                                                    label="Left / right"
+                                                    value={nudge.dx}
+                                                    min={-50}
+                                                    max={50}
+                                                    onChange={(dx) => setNudge({ ...nudge, dx })}
+                                                />
+                                                <NumberField
+                                                    id="nudge-dy"
+                                                    label="Up / down"
+                                                    value={nudge.dy}
+                                                    min={-50}
+                                                    max={50}
+                                                    onChange={(dy) => setNudge({ ...nudge, dy })}
+                                                />
+                                            </div>
+                                            <div className="mt-3">
+                                                <RangeField
+                                                    id="nudge-scale"
+                                                    label="Name size"
+                                                    display={`${Math.round(nudge.scale * 100)}%`}
+                                                    value={Math.round(nudge.scale * 100)}
+                                                    min={50}
+                                                    max={200}
+                                                    step={1}
+                                                    onChange={(percent) => setNudge({ ...nudge, scale: percent / 100 })}
+                                                />
+                                            </div>
+                                            <p className="font-bold text-[11px] text-black/60 mt-1.5">
+                                                Moves and resizes the name on this certificate only, on top of where
+                                                the design puts it. Dragging the name on the preview still moves it on
+                                                every certificate.
+                                            </p>
+                                        </div>
+                                    </div>
+                                ) : null}
                             </section>
 
                             <section className={cardClass}>
@@ -1175,8 +1567,8 @@ export default function BulkGeneratePage() {
 
                                     <p className="font-bold text-xs border-3 border-black bg-neo-cream p-3">
                                         Exporting at {exportDesign.width} × {exportDesign.height} px ·{" "}
-                                        {usableNames.length.toLocaleString()} certificate
-                                        {usableNames.length === 1 ? "" : "s"}
+                                        {usable.length.toLocaleString()} certificate
+                                        {usable.length === 1 ? "" : "s"}
                                     </p>
 
                                     {phase === "working" ? (
@@ -1189,7 +1581,7 @@ export default function BulkGeneratePage() {
                                             </div>
                                             <p className="font-black uppercase text-xs text-center">
                                                 Generating {progress.toLocaleString()} /{" "}
-                                                {usableNames.length.toLocaleString()} · {progressPercent}%
+                                                {usable.length.toLocaleString()} · {progressPercent}%
                                             </p>
                                             <button
                                                 type="button"
@@ -1206,12 +1598,12 @@ export default function BulkGeneratePage() {
                                             <button
                                                 type="button"
                                                 onClick={() => void generate()}
-                                                disabled={usableNames.length === 0}
+                                                disabled={usable.length === 0}
                                                 className={`${buttonClass} w-full bg-neo-yellow text-base`}
                                             >
-                                                {usableNames.length === 0
+                                                {usable.length === 0
                                                     ? "Add participants first"
-                                                    : `Generate ${usableNames.length.toLocaleString()} certificate${usableNames.length === 1 ? "" : "s"}`}
+                                                    : `Generate ${usable.length.toLocaleString()} certificate${usable.length === 1 ? "" : "s"}`}
                                             </button>
                                             <button
                                                 type="button"

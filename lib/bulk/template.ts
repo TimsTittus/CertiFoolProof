@@ -16,6 +16,7 @@ import {
     LOGO_RADIUS_MAX,
     LOGO_WIDTH_LIMITS,
     MAX_COLUMNS,
+    MAX_TEXT_LINES,
     MIN_MAX_WIDTH,
     PRESET_PALETTES,
     SIGNATURE_SIZE_LIMITS,
@@ -48,6 +49,7 @@ import {
     type SignatureMode,
     type TemplateMode,
     type TextElement,
+    type TextFit,
     type TextElementId,
 } from "./renderer"
 
@@ -136,6 +138,9 @@ function sanitizeElement(raw: unknown, base: TextElement, id: ElementId): TextEl
         letterSpacing: readNumber(raw.letterSpacing, 0, 50, base.letterSpacing),
         lineHeight: readNumber(raw.lineHeight, 0.8, 3, base.lineHeight),
         maxWidth: readNumber(raw.maxWidth, MIN_MAX_WIDTH, 100, base.maxWidth),
+        // Templates saved before long text could wrap carry neither field; the defaults match how they looked.
+        fit: readOneOf<TextFit>(raw.fit, ["shrink", "wrap", "wrapshrink"], base.fit),
+        maxLines: Math.round(readNumber(raw.maxLines, 1, MAX_TEXT_LINES, base.maxLines)),
         opacity: readNumber(raw.opacity, 10, 100, base.opacity),
         visible: readBoolean(raw.visible, base.visible),
         visibleOnUpload: readBoolean(raw.visibleOnUpload, base.visibleOnUpload),

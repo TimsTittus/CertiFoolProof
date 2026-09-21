@@ -1,3 +1,5 @@
+import { fillTokens, stripTokens, type Recipient } from "./tokens"
+
 /** Characters that are illegal in file names on common operating systems. */
 const ILLEGAL_FILENAME_CHARS = /[\u0000-\u001f\u007f<>:"/\\|?*]/g
 
@@ -18,18 +20,21 @@ export function sanitizeFileName(value: string): string {
     return cleaned
 }
 
-/** Fills `{name}` / `{index}` tokens and de-duplicates the result within the archive. */
+/**
+ * Fills the pattern from the recipient - `{name}`, `{index}` and any column of the list -
+ * and de-duplicates the result within the archive. A token nothing can fill is dropped, so
+ * a stray placeholder never ends up in a file name.
+ */
 export function buildFileName(
     pattern: string,
-    name: string,
+    recipient: Recipient,
     index: number,
     extension: string,
     used: Map<string, number>
 ): string {
-    const filled = (pattern || "{name}")
-        .replace(/\{name\}/gi, name)
-        .replace(/\{index\}/gi, String(index))
-        .replace(/\{n\}/gi, String(index))
+    const filled = stripTokens(
+        fillTokens((pattern || "{name}").replace(/\{n\}/gi, String(index)), recipient)
+    )
 
     const base = sanitizeFileName(filled)
     const key = base.toLowerCase()

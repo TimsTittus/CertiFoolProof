@@ -20,6 +20,7 @@ import {
     type RenderedLayout,
     type Selection,
 } from "@/lib/bulk/renderer"
+import type { Recipient } from "@/lib/bulk/tokens"
 import { clamp } from "./ui"
 
 const TEXT_HIT_ORDER: ElementId[] = ["organization", "heading", "subheading", "body", "dateLabel", "date"]
@@ -65,7 +66,8 @@ interface HitItem {
 
 interface PreviewStageProps {
     design: CertificateDesign
-    name: string
+    /** The recipient the preview is standing in for, with their data and any tweaks of their own. */
+    recipient: Recipient
     background: CanvasImageSource | null
     selection: Selection | null
     onSelect: (selection: Selection | null) => void
@@ -73,19 +75,22 @@ interface PreviewStageProps {
     onUpdate: (update: (design: CertificateDesign) => CertificateDesign) => void
     /** Bumps when web fonts or uploaded pictures finish loading, so anything drawn without them is redrawn. */
     assetVersion: number
+    /** Called after every draw with the ids of the elements whose text did not fit, joined by commas. */
+    onOverflow?: (ids: string) => void
 }
 
-const EMPTY_LAYOUT: RenderedLayout = { elements: {}, signatories: {}, logos: {} }
+const EMPTY_LAYOUT: RenderedLayout = { elements: {}, signatories: {}, logos: {}, overflow: [] }
 
 export function PreviewStage({
     design,
-    name,
+    recipient,
     background,
     selection,
     onSelect,
     onPatch,
     onUpdate,
     assetVersion,
+    onOverflow,
 }: PreviewStageProps) {
     const wrapperRef = useRef<HTMLDivElement | null>(null)
     const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -95,9 +100,12 @@ export function PreviewStage({
     useEffect(() => {
         const canvas = canvasRef.current
         if (!canvas) return
-        const rendered = renderToCanvas(canvas, design, name, background)
-        if (rendered) setLayout(rendered)
-    }, [design, name, background, assetVersion])
+        const rendered = renderToCanvas(canvas, design, recipient, background)
+        if (!rendered) return
+        setLayout(rendered)
+        // Reporting the same string twice is a no-op for React, so this cannot loop.
+        onOverflow?.(rendered.overflow.join(","))
+    }, [design, recipient, background, assetVersion, onOverflow])
 
     const items: HitItem[] = []
 
@@ -138,10 +146,18 @@ export function PreviewStage({
         items.push({ key: "element:name", selection: { kind: "element", id: "name" }, label: ELEMENT_LABELS.name, box: nameBox, resizable: true })
     }
 
+    // A recipient's own nudge moves the drawn name away from the design's position; dragging works
+    // in what is on screen and the nudge is taken off again before the design is changed, so the
+    // box follows the pointer exactly and the tweak survives the drag.
+    const nameNudge = recipient.nudge
+
     const originOf = (target: Selection): { x: number; y: number } | null => {
         switch (target.kind) {
             case "element": {
                 const element = getElement(design, target.id)
+                if (target.id === "name" && nameNudge) {
+                    return { x: element.x + nameNudge.dx, y: element.y + nameNudge.dy }
+                }
                 return { x: element.x, y: element.y }
             }
             case "signatory": {
@@ -239,9 +255,15 @@ export function PreviewStage({
 
     const applyMove = (target: Selection, x: number, y: number) => {
         switch (target.kind) {
-            case "element":
-                onPatch(target.id, { x: round1(clamp(x, 0, 100)), y: round1(clamp(y, 0, 100)) })
+            case "element": {
+                const offsetX = target.id === "name" && nameNudge ? nameNudge.dx : 0
+                const offsetY = target.id === "name" && nameNudge ? nameNudge.dy : 0
+                onPatch(target.id, {
+                    x: round1(clamp(x - offsetX, 0, 100)),
+                    y: round1(clamp(y - offsetY, 0, 100)),
+                })
                 break
+            }
             case "signatory":
                 onUpdate((current) => moveSignatory(current, target.id, round1(clamp(x, 0, 100)), round1(clamp(y, 0, 100))))
                 break
@@ -329,7 +351,7 @@ export function PreviewStage({
                 {items.map((item) => {
                     const { box, selection: target } = item
                     const selected = sameSelection(selection, target)
-                    const wraps = target.kind === "element" && target.id === "body"
+                    const wraps = target.kind === "element" && getElement(design, target.id).fit !== "shrink"
                     const alignment = target.kind === "element" ? getElement(design, target.id).align : "center"
 
                     return (

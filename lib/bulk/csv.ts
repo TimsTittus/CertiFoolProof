@@ -1,3 +1,5 @@
+import { createRecipient, normalizeFieldKey, type Recipient } from "./tokens"
+
 export interface ParsedCsv {
     /** Every row, including the header row if there is one. */
     rows: string[][]
@@ -124,22 +126,64 @@ export function guessNameColumn(rows: string[][]): number {
     return 0
 }
 
-/** Extracts the given column, collapsing whitespace and dropping empty values. */
-export function extractNames(
-    rows: string[][],
-    columnIndex: number,
-    skipFirstRow: boolean
-): string[] {
-    return rows
-        .slice(skipFirstRow ? 1 : 0)
-        .map((row) => (row[columnIndex] ?? "").replace(/\s+/g, " ").trim())
-        .filter((name) => name.length > 0)
-}
-
 /** Splits a pasted block of text into one name per line. */
 export function parseNameList(text: string): string[] {
     return text
         .split(/\r?\n/)
         .map((line) => line.replace(/\s+/g, " ").trim())
         .filter((line) => line.length > 0)
+}
+
+/**
+ * The token key each column answers to, e.g. an "Email address" header becomes `emailaddress`,
+ * which `{email address}` and `{EmailAddress}` both match. Columns without a usable header fall
+ * back to `column1`, `column2` and so on, and a key already taken by an earlier column is dropped.
+ */
+export function columnKeys(rows: string[][], hasHeader: boolean): string[] {
+    if (rows.length === 0) return []
+    const width = Math.max(...rows.map((row) => row.length))
+    const header = hasHeader ? rows[0] : []
+    const keys: string[] = []
+    const taken = new Set<string>()
+
+    for (let index = 0; index < width; index++) {
+        let key = normalizeFieldKey(header[index] ?? "")
+        if (!key || taken.has(key)) key = `column${index + 1}`
+        // A fallback that is somehow taken too is given up on; that column simply has no token.
+        if (taken.has(key)) key = ""
+        if (key) taken.add(key)
+        keys.push(key)
+    }
+    return keys
+}
+
+/**
+ * Turns the rows into one recipient per participant, carrying every column of their row
+ * so `{tokens}` in the design can be filled with it. Whitespace is collapsed and rows with
+ * no name in the chosen column are skipped.
+ */
+export function buildRecipients(rows: string[][], columnIndex: number, skipFirstRow: boolean): Recipient[] {
+    const keys = columnKeys(rows, skipFirstRow)
+    const recipients: Recipient[] = []
+
+    for (const row of rows.slice(skipFirstRow ? 1 : 0)) {
+        const name = (row[columnIndex] ?? "").replace(/\s+/g, " ").trim()
+        if (!name) continue
+
+        const fields: Record<string, string> = {}
+        keys.forEach((key, index) => {
+            if (!key) return
+            const value = (row[index] ?? "").replace(/\s+/g, " ").trim()
+            if (value) fields[key] = value
+        })
+
+        // `name` and `index` always mean the chosen name column and the position in the batch.
+        recipients.push(createRecipient(name, recipients.length + 1, fields))
+    }
+    return recipients
+}
+
+/** One recipient per pasted line. Only `{name}` and `{index}` can be filled from a pasted list. */
+export function recipientsFromNames(names: string[]): Recipient[] {
+    return names.map((name, index) => createRecipient(name, index + 1))
 }
