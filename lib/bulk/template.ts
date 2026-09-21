@@ -18,6 +18,7 @@ import {
     MAX_COLUMNS,
     MAX_TEXT_LINES,
     MIN_MAX_WIDTH,
+    NO_LINE_LIMIT,
     PRESET_PALETTES,
     SIGNATURE_SIZE_LIMITS,
     SIZE_PRESETS,
@@ -69,6 +70,9 @@ const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_STROKES = 200
 const MAX_POINTS_PER_STROKE = 3000
 const MAX_TOTAL_POINTS = 12000
+
+const MAX_LAYER_KEYS = 1000
+const LAYER_KEY = /^(element|logo|signatory|signature):[A-Za-z0-9_-]{1,64}$/
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/
 const IMAGE_DATA_URL = /^data:image\/(png|jpe?g|webp);base64,/i
@@ -141,7 +145,10 @@ function sanitizeElement(raw: unknown, base: TextElement, id: ElementId): TextEl
         maxWidth: readNumber(raw.maxWidth, MIN_MAX_WIDTH, 100, base.maxWidth),
         // Templates saved before long text could wrap carry neither field; the defaults match how they looked.
         fit: readOneOf<TextFit>(raw.fit, ["shrink", "wrap", "wrapshrink"], base.fit),
-        maxLines: Math.round(readNumber(raw.maxLines, 1, MAX_TEXT_LINES, base.maxLines)),
+        maxLines:
+            raw.maxLines === NO_LINE_LIMIT
+                ? NO_LINE_LIMIT
+                : Math.round(readNumber(raw.maxLines, 1, MAX_TEXT_LINES, base.maxLines)),
         opacity: readNumber(raw.opacity, 10, 100, base.opacity),
         visible: readBoolean(raw.visible, base.visible),
         visibleOnUpload: readBoolean(raw.visibleOnUpload, base.visibleOnUpload),
@@ -176,6 +183,20 @@ function sanitizeDrawing(raw: unknown): SignatureDrawing | null {
 
     if (strokes.length === 0) return null
     return { aspect: readNumber(raw.aspect, 0.05, 50, 3), strokes }
+}
+
+/** A list of layer or selection keys: only well-formed, distinct ones are kept. */
+function readKeys(value: unknown): string[] {
+    if (!Array.isArray(value)) return []
+    const keys: string[] = []
+    const seen = new Set<string>()
+    for (const item of value.slice(0, MAX_LAYER_KEYS)) {
+        if (typeof item === "string" && LAYER_KEY.test(item) && !seen.has(item)) {
+            seen.add(item)
+            keys.push(item)
+        }
+    }
+    return keys
 }
 
 function readImageSource(value: unknown): string | null {
@@ -242,6 +263,7 @@ function sanitizeSignatory(raw: unknown, taken: Set<string>): Signatory | null {
     const base = createSignatory(readId(raw.id, taken))
     return {
         id: base.id,
+        visible: readBoolean(raw.visible, base.visible),
         name: readString(raw.name, base.name),
         title: readString(raw.title, base.title),
         line: sanitizeLine(raw.line, base.line),
@@ -404,6 +426,8 @@ export function sanitizeDesign(raw: unknown): CertificateDesign {
         signatories,
         signatoryLayout,
         logos: sanitizeLogos(raw.logos, takenIds),
+        layers: readKeys(raw.layers),
+        locked: readKeys(raw.locked),
     }
 }
 

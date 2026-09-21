@@ -11,7 +11,9 @@ import {
     patchLogo,
     patchSignatureArt,
     renderToCanvas,
+    resolveLayerOrder,
     sameSelection,
+    selectionKey,
     sizeLimits,
     type CertificateDesign,
     type ElementBox,
@@ -20,18 +22,31 @@ import {
     type RenderedLayout,
     type Selection,
 } from "@/lib/bulk/renderer"
+import { GRID_STEP_PERCENT, buildSnapTargets, gridStepPx, snapBox, type SnapTargets } from "@/lib/bulk/editing"
 import type { Recipient } from "@/lib/bulk/tokens"
 import { clamp } from "./ui"
 
-const TEXT_HIT_ORDER: ElementId[] = ["organization", "heading", "subheading", "body", "dateLabel", "date"]
-
 const MIN_WRAP_WIDTH = 10
+
+/** How close, in screen pixels, a dragged box has to come to a guide before it snaps to it. */
+const SNAP_SCREEN_PX = 6
 
 const round1 = (value: number) => Math.round(value * 10) / 10
 const round2 = (value: number) => Math.round(value * 100) / 100
 
 type Interaction =
-    | { kind: "move"; target: Selection; startX: number; startY: number; originX: number; originY: number }
+    | {
+        kind: "move"
+        target: Selection
+        startX: number
+        startY: number
+        originX: number
+        originY: number
+        /** Where the thing was drawn when the drag began, in canvas pixels. */
+        box: ElementBox
+        /** What it may snap to. Null when snapping is off. */
+        targets: SnapTargets | null
+    }
     | {
         kind: "scale"
         target: Selection
@@ -62,6 +77,14 @@ interface HitItem {
     label: string
     box: ElementBox
     resizable: boolean
+    locked: boolean
+}
+
+/** Whether two selections belong to the same signatory, whose name block and signature travel together. */
+function sameOwner(a: Selection, b: Selection): boolean {
+    if (sameSelection(a, b)) return true
+    const signatory = (item: Selection) => item.kind === "signatory" || item.kind === "signature"
+    return signatory(a) && signatory(b) && a.id === b.id
 }
 
 interface PreviewStageProps {
@@ -77,7 +100,24 @@ interface PreviewStageProps {
     assetVersion: number
     /** Called after every draw with the ids of the elements whose text did not fit, joined by commas. */
     onOverflow?: (ids: string) => void
+
+    /** Everything else that is selected along with `selection`. */
+    others?: Selection[]
+    /** Shift-click: adds a thing to the selection or takes it out. */
+    onToggle?: (selection: Selection) => void
+    /** Dragged things snap to the page centre and to each other. */
+    snap?: boolean
+    /** Draws a grid over the preview; dragged things snap to it too. */
+    grid?: boolean
+    /** A drag, resize or width change begins or ends, so its many small changes can be undone as one. */
+    onGestureStart?: () => void
+    onGestureEnd?: () => void
+    /** Called after every draw with where everything landed, in canvas pixels. Pass a stable function. */
+    onLayout?: (layout: RenderedLayout) => void
+    onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>
 }
+
+const NO_SELECTIONS: Selection[] = []
 
 const EMPTY_LAYOUT: RenderedLayout = { elements: {}, signatories: {}, logos: {}, overflow: [] }
 
@@ -91,11 +131,21 @@ export function PreviewStage({
     onUpdate,
     assetVersion,
     onOverflow,
+    others = NO_SELECTIONS,
+    onToggle,
+    snap = false,
+    grid = false,
+    onGestureStart,
+    onGestureEnd,
+    onLayout,
+    onKeyDown,
 }: PreviewStageProps) {
     const wrapperRef = useRef<HTMLDivElement | null>(null)
     const canvasRef = useRef<HTMLCanvasElement | null>(null)
     const interaction = useRef<Interaction | null>(null)
     const [layout, setLayout] = useState<RenderedLayout>(EMPTY_LAYOUT)
+    /** The guide lines a dragged thing is snapped to right now, in canvas pixels. */
+    const [guides, setGuides] = useState<{ x: number | null; y: number | null }>({ x: null, y: null })
 
     useEffect(() => {
         const canvas = canvasRef.current
@@ -103,47 +153,66 @@ export function PreviewStage({
         const rendered = renderToCanvas(canvas, design, recipient, background)
         if (!rendered) return
         setLayout(rendered)
+        onLayout?.(rendered)
         // Reporting the same string twice is a no-op for React, so this cannot loop.
         onOverflow?.(rendered.overflow.join(","))
-    }, [design, recipient, background, assetVersion, onOverflow])
+    }, [design, recipient, background, assetVersion, onOverflow, onLayout])
 
+    const lockedKeys = new Set(design.locked)
+    const isLocked = (target: Selection) => lockedKeys.has(selectionKey(target))
+
+    // Listed in stacking order, so whatever is drawn on top is also the first thing a click reaches.
     const items: HitItem[] = []
 
-    for (const logo of design.logos) {
-        const box = layout.logos[logo.id]
-        if (box) items.push({ key: `logo:${logo.id}`, selection: { kind: "logo", id: logo.id }, label: "Logo", box, resizable: true })
-    }
-    for (const id of TEXT_HIT_ORDER) {
-        const box = layout.elements[id]
-        if (box) items.push({ key: `element:${id}`, selection: { kind: "element", id }, label: ELEMENT_LABELS[id], box, resizable: true })
-    }
-    for (const signatory of design.signatories) {
-        const box = layout.signatories[signatory.id]?.block
-        if (box) {
-            items.push({
-                key: `signatory:${signatory.id}`,
-                selection: { kind: "signatory", id: signatory.id },
-                label: signatory.name ? `Signatory: ${signatory.name}` : "Signatory",
-                box,
-                resizable: false,
-            })
+    for (const layerKey of resolveLayerOrder(design)) {
+        const at = layerKey.indexOf(":")
+        const kind = layerKey.slice(0, at)
+        const id = layerKey.slice(at + 1)
+
+        if (kind === "logo") {
+            const box = layout.logos[id]
+            const target: Selection = { kind: "logo", id }
+            if (box) items.push({ key: layerKey, selection: target, label: "Logo", box, resizable: true, locked: isLocked(target) })
+        } else if (kind === "signatory") {
+            const signatory = design.signatories.find((item) => item.id === id)
+            const rendered = layout.signatories[id]
+            if (!signatory || !rendered) continue
+            if (rendered.block) {
+                const target: Selection = { kind: "signatory", id }
+                items.push({
+                    key: layerKey,
+                    selection: target,
+                    label: signatory.name ? `Signatory: ${signatory.name}` : "Signatory",
+                    box: rendered.block,
+                    resizable: false,
+                    locked: isLocked(target),
+                })
+            }
+            if (rendered.signature) {
+                const target: Selection = { kind: "signature", id }
+                items.push({
+                    key: `signature:${id}`,
+                    selection: target,
+                    label: "Signature",
+                    box: rendered.signature,
+                    resizable: true,
+                    locked: isLocked(target),
+                })
+            }
+        } else {
+            const box = layout.elements[id as ElementId]
+            const target: Selection = { kind: "element", id: id as ElementId }
+            if (box) {
+                items.push({
+                    key: layerKey,
+                    selection: target,
+                    label: ELEMENT_LABELS[id as ElementId],
+                    box,
+                    resizable: true,
+                    locked: isLocked(target),
+                })
+            }
         }
-    }
-    for (const signatory of design.signatories) {
-        const box = layout.signatories[signatory.id]?.signature
-        if (box) {
-            items.push({
-                key: `signature:${signatory.id}`,
-                selection: { kind: "signature", id: signatory.id },
-                label: "Signature",
-                box,
-                resizable: true,
-            })
-        }
-    }
-    const nameBox = layout.elements.name
-    if (nameBox) {
-        items.push({ key: "element:name", selection: { kind: "element", id: "name" }, label: ELEMENT_LABELS.name, box: nameBox, resizable: true })
     }
 
     // A recipient's own nudge moves the drawn name away from the design's position; dragging works
@@ -195,15 +264,28 @@ export function PreviewStage({
         }
     }
 
-    const beginMove = (event: React.PointerEvent<HTMLElement>, target: Selection) => {
+    /** Keyboard shortcuts work while the preview has focus; pressing on a thing does not focus it by itself. */
+    const focusStage = () => wrapperRef.current?.focus({ preventScroll: true })
+
+    const beginMove = (event: React.PointerEvent<HTMLElement>, target: Selection, box: ElementBox, locked: boolean) => {
         if (event.pointerType === "mouse" && event.button !== 0) return
         event.stopPropagation()
         event.preventDefault()
-        event.currentTarget.setPointerCapture(event.pointerId)
+        focusStage()
+
+        if (event.shiftKey && onToggle) {
+            onToggle(target)
+            return
+        }
 
         onSelect(target)
+        // A locked thing can be picked, but not dragged.
+        if (locked) return
+
         const origin = originOf(target)
         if (!origin) return
+        event.currentTarget.setPointerCapture(event.pointerId)
+        onGestureStart?.()
         interaction.current = {
             kind: "move",
             target,
@@ -211,6 +293,14 @@ export function PreviewStage({
             startY: event.clientY,
             originX: origin.x,
             originY: origin.y,
+            box,
+            targets: snap
+                ? buildSnapTargets(
+                    design,
+                    items.filter((item) => !sameOwner(item.selection, target)).map((item) => item.box),
+                    grid
+                )
+                : null,
         }
     }
 
@@ -221,7 +311,9 @@ export function PreviewStage({
         if (!rect || rect.width === 0 || !start) return
         event.stopPropagation()
         event.preventDefault()
+        focusStage()
         event.currentTarget.setPointerCapture(event.pointerId)
+        onGestureStart?.()
 
         const centerX = rect.left + ((box.x + box.w / 2) / design.width) * rect.width
         const centerY = rect.top + ((box.y + box.h / 2) / design.height) * rect.height
@@ -240,7 +332,9 @@ export function PreviewStage({
         if (event.pointerType === "mouse" && event.button !== 0) return
         event.stopPropagation()
         event.preventDefault()
+        focusStage()
         event.currentTarget.setPointerCapture(event.pointerId)
+        onGestureStart?.()
 
         const element = getElement(design, id)
         interaction.current = {
@@ -253,27 +347,28 @@ export function PreviewStage({
         }
     }
 
-    const applyMove = (target: Selection, x: number, y: number) => {
+    /** `round` is coarser while free-dragging; a snapped position keeps a finer one so it lands exactly on its guide. */
+    const applyMove = (target: Selection, x: number, y: number, round: (value: number) => number) => {
         switch (target.kind) {
             case "element": {
                 const offsetX = target.id === "name" && nameNudge ? nameNudge.dx : 0
                 const offsetY = target.id === "name" && nameNudge ? nameNudge.dy : 0
                 onPatch(target.id, {
-                    x: round1(clamp(x - offsetX, 0, 100)),
-                    y: round1(clamp(y - offsetY, 0, 100)),
+                    x: round(clamp(x - offsetX, 0, 100)),
+                    y: round(clamp(y - offsetY, 0, 100)),
                 })
                 break
             }
             case "signatory":
-                onUpdate((current) => moveSignatory(current, target.id, round1(clamp(x, 0, 100)), round1(clamp(y, 0, 100))))
+                onUpdate((current) => moveSignatory(current, target.id, round(clamp(x, 0, 100)), round(clamp(y, 0, 100))))
                 break
             case "signature":
                 onUpdate((current) =>
-                    patchSignatureArt(current, target.id, { dx: round1(clamp(x, -100, 100)), dy: round1(clamp(y, -100, 100)) })
+                    patchSignatureArt(current, target.id, { dx: round(clamp(x, -100, 100)), dy: round(clamp(y, -100, 100)) })
                 )
                 break
             case "logo":
-                onUpdate((current) => patchLogo(current, target.id, { x: round1(clamp(x, 0, 100)), y: round1(clamp(y, 0, 100)) }))
+                onUpdate((current) => patchLogo(current, target.id, { x: round(clamp(x, 0, 100)), y: round(clamp(y, 0, 100)) }))
                 break
         }
     }
@@ -319,9 +414,33 @@ export function PreviewStage({
         if (!active || !rect || rect.width === 0 || rect.height === 0) return
 
         if (active.kind === "move") {
-            const x = active.originX + ((event.clientX - active.startX) / rect.width) * 100
-            const y = active.originY + ((event.clientY - active.startY) / rect.height) * 100
-            applyMove(active.target, x, y)
+            const shiftX = ((event.clientX - active.startX) / rect.width) * 100
+            const shiftY = ((event.clientY - active.startY) / rect.height) * 100
+            let x = active.originX + shiftX
+            let y = active.originY + shiftY
+            let snapped = false
+
+            // Holding Ctrl (or Cmd) while dragging places things freely.
+            if (active.targets && !event.ctrlKey && !event.metaKey) {
+                const proposed: ElementBox = {
+                    x: active.box.x + (shiftX / 100) * design.width,
+                    y: active.box.y + (shiftY / 100) * design.height,
+                    w: active.box.w,
+                    h: active.box.h,
+                }
+                const result = snapBox(proposed, active.targets, SNAP_SCREEN_PX * (design.width / rect.width))
+                x += (result.dx / design.width) * 100
+                y += (result.dy / design.height) * 100
+                snapped = result.guideX !== null || result.guideY !== null
+                setGuides((current) =>
+                    current.x === result.guideX && current.y === result.guideY
+                        ? current
+                        : { x: result.guideX, y: result.guideY }
+                )
+            } else {
+                setGuides((current) => (current.x === null && current.y === null ? current : { x: null, y: null }))
+            }
+            applyMove(active.target, x, y, snapped ? round2 : round1)
         } else if (active.kind === "scale") {
             const distance = Math.hypot(event.clientX - active.centerX, event.clientY - active.centerY)
             applyScale(active, distance / active.startDistance)
@@ -336,21 +455,45 @@ export function PreviewStage({
     // Moves and releases from a handle bubble up to its box, so the box handles them all.
     const endInteraction = () => {
         interaction.current = null
+        setGuides((current) => (current.x === null && current.y === null ? current : { x: null, y: null }))
+        onGestureEnd?.()
     }
 
     return (
         <div
             ref={wrapperRef}
-            className="relative"
+            className="relative outline-none focus-visible:ring-2 focus-visible:ring-black"
+            tabIndex={0}
+            role="group"
+            aria-label="Certificate preview. Select something, then use the arrow keys to nudge it."
+            onKeyDown={onKeyDown}
             // Anything that is not an element (the artwork or empty space) clears the selection.
-            onPointerDown={() => onSelect(null)}
+            onPointerDown={(event) => {
+                if (!event.shiftKey) onSelect(null)
+            }}
         >
             <canvas ref={canvasRef} className="w-full h-auto block select-none" />
 
+            {grid ? (
+                <div
+                    aria-hidden
+                    className="pointer-events-none absolute inset-0"
+                    style={{
+                        backgroundImage:
+                            "linear-gradient(to right, rgba(0,0,0,0.16) 1px, transparent 1px), linear-gradient(to bottom, rgba(0,0,0,0.16) 1px, transparent 1px)",
+                        backgroundSize: `${GRID_STEP_PERCENT}% ${(gridStepPx(design) / design.height) * 100}%`,
+                    }}
+                >
+                    <span className="absolute inset-y-0 w-px bg-black/40" style={{ left: "50%" }} />
+                    <span className="absolute inset-x-0 h-px bg-black/40" style={{ top: "50%" }} />
+                </div>
+            ) : null}
+
             <div className="pointer-events-none absolute inset-0">
                 {items.map((item) => {
-                    const { box, selection: target } = item
+                    const { box, selection: target, locked } = item
                     const selected = sameSelection(selection, target)
+                    const alsoSelected = !selected && others.some((other) => sameSelection(other, target))
                     const wraps = target.kind === "element" && getElement(design, target.id).fit !== "shrink"
                     const alignment = target.kind === "element" ? getElement(design, target.id).align : "center"
 
@@ -358,12 +501,13 @@ export function PreviewStage({
                         <div
                             key={item.key}
                             role="button"
-                            aria-label={`${item.label}${selected ? " (selected)" : ""}`}
-                            aria-pressed={selected}
-                            onPointerDown={(event) => beginMove(event, target)}
+                            aria-label={`${item.label}${locked ? " (locked)" : ""}${selected || alsoSelected ? " (selected)" : ""}`}
+                            aria-pressed={selected || alsoSelected}
+                            onPointerDown={(event) => beginMove(event, target, box, locked)}
                             onPointerMove={handleMove}
                             onPointerUp={endInteraction}
                             onPointerCancel={endInteraction}
+                            onLostPointerCapture={endInteraction}
                             style={{
                                 left: `${(box.x / design.width) * 100}%`,
                                 top: `${(box.y / design.height) * 100}%`,
@@ -372,20 +516,23 @@ export function PreviewStage({
                                 minWidth: 16,
                                 minHeight: 16,
                                 touchAction: "none",
-                                zIndex: selected ? 20 : 10,
+                                zIndex: selected ? 20 : alsoSelected ? 15 : 10,
                             }}
-                            className={`pointer-events-auto absolute cursor-move outline-offset-2 ${selected
+                            className={`pointer-events-auto absolute ${locked ? "cursor-pointer" : "cursor-move"} outline-offset-2 ${selected
                                 ? "outline outline-2 outline-dashed outline-black"
-                                : "hover:outline hover:outline-1 hover:outline-dashed hover:outline-black/60"
+                                : alsoSelected
+                                    ? "outline outline-2 outline-dashed outline-black/60"
+                                    : "hover:outline hover:outline-1 hover:outline-dashed hover:outline-black/60"
                                 }`}
                         >
                             {selected ? (
                                 <>
                                     <span className="pointer-events-none absolute left-0 bottom-full mb-2 max-w-[16rem] truncate whitespace-nowrap bg-black text-white text-[10px] font-black uppercase px-1.5 py-0.5">
                                         {item.label}
+                                        {locked ? " · Locked" : ""}
                                     </span>
 
-                                    {item.resizable
+                                    {item.resizable && !locked
                                         ? CORNERS.map(({ corner, style, cursor }) => (
                                             <span
                                                 key={corner}
@@ -397,7 +544,7 @@ export function PreviewStage({
                                         ))
                                         : null}
 
-                                    {wraps && target.kind === "element"
+                                    {wraps && !locked && target.kind === "element"
                                         ? ([-1, 1] as const)
                                             .filter(
                                                 (direction) =>
@@ -425,6 +572,21 @@ export function PreviewStage({
                         </div>
                     )
                 })}
+
+                {guides.x !== null ? (
+                    <span
+                        aria-hidden
+                        className="absolute inset-y-0 w-px bg-fuchsia-500"
+                        style={{ left: `${(guides.x / design.width) * 100}%`, zIndex: 30 }}
+                    />
+                ) : null}
+                {guides.y !== null ? (
+                    <span
+                        aria-hidden
+                        className="absolute inset-x-0 h-px bg-fuchsia-500"
+                        style={{ top: `${(guides.y / design.height) * 100}%`, zIndex: 30 }}
+                    />
+                ) : null}
             </div>
         </div>
     )

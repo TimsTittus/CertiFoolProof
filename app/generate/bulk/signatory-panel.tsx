@@ -243,6 +243,7 @@ export function SignatoryPanel({ design, selection, padKey, onSelect, onUpdate }
                                     >
                                         <span className="block truncate font-black text-xs uppercase">
                                             {index + 1}. {signatory.name || "Unnamed"}
+                                            {signatory.visible ? "" : " (hidden)"}
                                         </span>
                                         <span className="block truncate font-bold text-[11px] text-black/60">
                                             {signatory.title || "No title"}
@@ -358,7 +359,20 @@ function SignatoryEditor({ signatory, design, padKey, onUpdate }: SignatoryEdito
 
     return (
         <div className="border-3 border-black bg-neo-cream p-4 space-y-5">
-            <h3 className="font-black uppercase italic text-sm">Edit signatory</h3>
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+                <h3 className="font-black uppercase italic text-sm">Edit signatory</h3>
+                <label className="flex items-center gap-2 font-black uppercase text-[11px] cursor-pointer">
+                    <input
+                        type="checkbox"
+                        checked={signatory.visible}
+                        onChange={(event) =>
+                            onUpdate((current) => patchSignatory(current, id, { visible: event.target.checked }))
+                        }
+                        className={checkboxClass}
+                    />
+                    Show signatory
+                </label>
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>

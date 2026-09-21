@@ -23,7 +23,7 @@ import {
     VERIFICATION_LOGO_ID,
     renderVerificationBlock,
 } from "@/lib/certificate/verification-block"
-import { PreviewStage } from "./bulk/preview-stage"
+import { DesignStage } from "./bulk/design-stage"
 import { buttonClass, cardClass, smallButtonClass } from "./bulk/ui"
 import { useDesigner } from "./bulk/use-designer"
 import { CertificateDesigner, CertificatePreview } from "./designer"
@@ -37,6 +37,12 @@ const ISSUE_AUTOSAVE_KEY = "certifoolproof.issue.template.v1"
 
 /** Where the QR block lands the first time it is put on a certificate: centred along the bottom. */
 const VERIFICATION_PLACE = { x: 50, y: 82, width: 12 }
+
+/** The QR block exists once and is replaced with the real one at issue time, so it cannot be copied. */
+const UNIQUE_LOGO_IDS = [VERIFICATION_LOGO_ID]
+
+/** Where resetting a logo's position sends the QR block. */
+const LOGO_HOMES = { [VERIFICATION_LOGO_ID]: { x: VERIFICATION_PLACE.x, y: VERIFICATION_PLACE.y } }
 
 /** The placeholders an issued certificate can fill, in the order they are offered. */
 const ISSUE_TOKENS = ["name", "title", "description", "email", "id", "date", "url"]
@@ -103,7 +109,7 @@ export default function GeneratePage() {
         onError: setError,
         createDesign: createIssueDesign,
     })
-    const { design, background, hydrated, restored, setDesign, refreshAssets } = designer
+    const { design, background, hydrated, restored, setDesign, resetHistory, refreshAssets } = designer
 
     /** The QR block as it looks before a certificate exists: a sample code and a sample ID. */
     const [sampleBlock, setSampleBlock] = useState("")
@@ -137,12 +143,14 @@ export default function GeneratePage() {
                 if (!hasBlock && restoredRef.current) return current
                 return withVerificationBlock(current, src)
             })
+            // Putting the block there was not the person's doing, so undo should not take it away again.
+            resetHistory()
         })()
 
         return () => {
             cancelled = true
         }
-    }, [hydrated, setDesign])
+    }, [hydrated, setDesign, resetHistory])
 
     const hasVerification = design.logos.some((logo) => logo.id === VERIFICATION_LOGO_ID)
 
@@ -622,18 +630,12 @@ export default function GeneratePage() {
                                                 Click to select · drag to move
                                             </span>
                                         </div>
-                                        <div className="border-3 border-black bg-neo-cream p-2 shadow-neo">
-                                            <PreviewStage
-                                                design={design}
-                                                recipient={previewRecipient}
-                                                background={background}
-                                                selection={designer.selection}
-                                                onSelect={designer.setSelection}
-                                                onPatch={designer.patchElement}
-                                                onUpdate={setDesign}
-                                                assetVersion={designer.assetVersion}
-                                            />
-                                        </div>
+                                        <DesignStage
+                                            designer={designer}
+                                            recipient={previewRecipient}
+                                            uniqueLogoIds={UNIQUE_LOGO_IDS}
+                                            logoHomes={LOGO_HOMES}
+                                        />
                                         <p className="font-bold text-[11px] text-black/60 mt-3">
                                             {design.width} × {design.height} px · prints as {pageSize.label}. The QR
                                             code and the ID shown here are samples until the certificate is issued.

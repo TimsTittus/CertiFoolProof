@@ -44,7 +44,7 @@ import { DesignBasics } from "./design-basics"
 import { ElementPanel } from "./element-panel"
 import { NumberField, RangeField } from "./fields"
 import { LogoPanel } from "./logo-panel"
-import { PreviewStage } from "./preview-stage"
+import { DesignStage } from "./design-stage"
 import { SignatoryPanel } from "./signatory-panel"
 import { useDesigner } from "./use-designer"
 import { buttonClass, cardClass, clamp, inputClass, labelClass, smallButtonClass } from "./ui"
@@ -147,7 +147,6 @@ export default function BulkGeneratePage() {
         setSelection,
         selectElement,
         background,
-        assetVersion,
         templateVersion,
         autosave,
         notice,
@@ -890,19 +889,11 @@ export default function BulkGeneratePage() {
                                         Click to select · drag to move
                                     </span>
                                 </div>
-                                <div className="border-3 border-black bg-neo-cream p-2 shadow-neo">
-                                    <PreviewStage
-                                        design={design}
-                                        recipient={previewRecipient}
-                                        background={background}
-                                        selection={selection}
-                                        onSelect={setSelection}
-                                        onPatch={patchDesignElement}
-                                        onUpdate={setDesign}
-                                        assetVersion={assetVersion}
-                                        onOverflow={setOverflowIds}
-                                    />
-                                </div>
+                                <DesignStage
+                                    designer={designer}
+                                    recipient={previewRecipient}
+                                    onOverflow={setOverflowIds}
+                                />
 
                                 <div className="mt-3 flex items-stretch gap-2">
                                     <button

@@ -10,7 +10,7 @@
  * change made in both. Each passes its own autosave key, so their work is kept apart.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
     SIZE_PRESETS,
     applyPageSize,
@@ -19,6 +19,8 @@ import {
     loadDesignFonts,
     loadDesignImages,
     patchElement,
+    sameSelection,
+    selectionKey,
     type CertificateDesign,
     type ElementId,
     type ElementPatch,
@@ -34,12 +36,47 @@ import {
     type TemplateBackground,
 } from "@/lib/bulk/template"
 import { downloadBlob } from "@/lib/bulk/export"
+import { cleanSelections, selectionExists } from "@/lib/bulk/editing"
 
 /** Uploaded artwork above this width is scaled down - past here it is all weight, no sharpness. */
 const MAX_BACKGROUND_WIDTH = 3000
 
 /** Template files are JSON; anything bigger than this is not one. */
 const MAX_TEMPLATE_FILE_BYTES = 40 * 1024 * 1024
+
+/** How many steps back undo can go. */
+const HISTORY_LIMIT = 100
+
+/** Edits made this close together (typing, dragging a slider) are undone as one step. */
+const COALESCE_MS = 700
+
+/** The design as it was before a step, kept so the step can be undone. */
+interface History {
+    past: CertificateDesign[]
+    future: CertificateDesign[]
+    /** True while further edits still belong to the step that is open. */
+    open: boolean
+    /** True during a drag: everything until it ends is one step, however long it takes. */
+    held: boolean
+    /** When the last edit happened. */
+    at: number
+}
+
+interface Picked {
+    primary: Selection | null
+    /** Things added with shift-click, for tools that work on several at once. */
+    others: Selection[]
+}
+
+const NO_OTHERS: Selection[] = []
+
+/** Options of the preview that help with placing things. Only kept for as long as the page is open. */
+export interface StageOptions {
+    /** Dragged things snap to the page centre and to each other. */
+    snap: boolean
+    /** Show the grid over the preview, and snap to it. */
+    grid: boolean
+}
 
 /** Where the uploaded artwork came from, so it can be embedded in a saved template. */
 interface BackgroundSource {
@@ -85,9 +122,30 @@ export interface Designer {
     patchElement: (id: ElementId, patch: ElementPatch) => void
     updateText: (id: TextElementId, text: string) => void
 
+    /** The thing the editing panels are pointed at. */
     selection: Selection | null
+    /** Picks one thing (or nothing), dropping any extra selection. */
     setSelection: React.Dispatch<React.SetStateAction<Selection | null>>
     selectElement: (id: ElementId | null) => void
+    /** Adds a thing to the selection, or takes it out again (shift-click). */
+    toggleSelection: (target: Selection) => void
+    /** Everything selected, the main selection first. Only things that still exist. */
+    selections: Selection[]
+
+    canUndo: boolean
+    canRedo: boolean
+    undo: () => void
+    redo: () => void
+    /** Makes the next change its own undo step, however soon it follows the last. */
+    checkpoint: () => void
+    /** Groups every change until `endGesture` into one undo step, e.g. a whole drag. */
+    beginGesture: () => void
+    endGesture: () => void
+    /** Forgets what can be undone, keeping the design as it is now. */
+    resetHistory: () => void
+
+    stageOptions: StageOptions
+    setStageOption: <K extends keyof StageOptions>(key: K, value: StageOptions[K]) => void
 
     background: HTMLImageElement | null
     backgroundName: string
@@ -115,20 +173,26 @@ export interface Designer {
 }
 
 export function useDesigner(options: DesignerOptions): Designer {
-    const [design, setDesign] = useState<CertificateDesign>(options.createDesign ?? createDefaultDesign)
+    const [design, setDesignState] = useState<CertificateDesign>(options.createDesign ?? createDefaultDesign)
     const [background, setBackground] = useState<HTMLImageElement | null>(null)
     const [backgroundName, setBackgroundName] = useState("")
     const backgroundUrlRef = useRef<string | null>(null)
     const backgroundSourceRef = useRef<BackgroundSource | null>(null)
 
-    const [selection, setSelection] = useState<Selection | null>({ kind: "element", id: "name" })
+    const [picked, setPicked] = useState<Picked>({ primary: { kind: "element", id: "name" }, others: NO_OTHERS })
+    const selection = picked.primary
+    const [stageOptions, setStageOptions] = useState<StageOptions>({ snap: true, grid: false })
+    const [canUndo, setCanUndo] = useState(false)
+    const [canRedo, setCanRedo] = useState(false)
     const [hydrated, setHydrated] = useState(false)
     const [restored, setRestored] = useState(false)
     const [templateVersion, setTemplateVersion] = useState(0)
     const [notice, setNotice] = useState("")
     const [autosave, setAutosave] = useState<AutosaveOutcome | null>(null)
     const [assetVersion, setAssetVersion] = useState(0)
+    // Always the design on screen: every change goes through `commit`, so it is never a render behind.
     const designRef = useRef(design)
+    const historyRef = useRef<History>({ past: [], future: [], open: false, held: false, at: 0 })
 
     // Held in a ref so a caller that rebuilds its callbacks does not rebuild every handler here.
     const optionsRef = useRef(options)
@@ -140,16 +204,155 @@ export function useDesigner(options: DesignerOptions): Designer {
     const reportError = useCallback((message: string) => optionsRef.current.onError(message), [])
     const reportChange = useCallback(() => optionsRef.current.onChange?.(), [])
 
+    const commit = useCallback((next: CertificateDesign) => {
+        designRef.current = next
+        setDesignState(next)
+    }, [])
+
+    const syncHistoryFlags = useCallback(() => {
+        const history = historyRef.current
+        setCanUndo(history.past.length > 0)
+        setCanRedo(history.future.length > 0)
+    }, [])
+
+    /** Changes the design as a step that can be undone. Edits that follow closely are folded into the same step. */
+    const setDesign = useCallback<React.Dispatch<React.SetStateAction<CertificateDesign>>>(
+        (action) => {
+            const current = designRef.current
+            const next = typeof action === "function" ? action(current) : action
+            if (next === current) return
+
+            const history = historyRef.current
+            const now = Date.now()
+            if (!history.open || (!history.held && now - history.at > COALESCE_MS)) {
+                history.past.push(current)
+                if (history.past.length > HISTORY_LIMIT) history.past.shift()
+                history.future = []
+                history.open = true
+                syncHistoryFlags()
+            }
+            history.at = now
+            commit(next)
+        },
+        [commit, syncHistoryFlags]
+    )
+
+    /** Swaps the design for a new starting point: what could be undone no longer applies, so it is forgotten. */
+    const replaceDesign = useCallback(
+        (action: React.SetStateAction<CertificateDesign>) => {
+            const next = typeof action === "function" ? action(designRef.current) : action
+            historyRef.current = { past: [], future: [], open: false, held: false, at: 0 }
+            syncHistoryFlags()
+            commit(next)
+        },
+        [commit, syncHistoryFlags]
+    )
+
+    const resetHistory = useCallback(() => {
+        historyRef.current = { past: [], future: [], open: false, held: false, at: 0 }
+        syncHistoryFlags()
+    }, [syncHistoryFlags])
+
+    const checkpoint = useCallback(() => {
+        historyRef.current.open = false
+    }, [])
+
+    const beginGesture = useCallback(() => {
+        const history = historyRef.current
+        history.open = false
+        history.held = true
+    }, [])
+
+    const endGesture = useCallback(() => {
+        const history = historyRef.current
+        history.open = false
+        history.held = false
+    }, [])
+
+    /** Keeps the selection to things that are still on the design after it has been rewound. */
+    const pruneSelection = useCallback((restored: CertificateDesign) => {
+        setPicked((current) => {
+            const primary = current.primary && selectionExists(restored, current.primary) ? current.primary : null
+            const others = cleanSelections(restored, current.others)
+            if (primary === current.primary && others.length === current.others.length) return current
+            return { primary, others: others.length > 0 ? others : NO_OTHERS }
+        })
+    }, [])
+
+    const undo = useCallback(() => {
+        const history = historyRef.current
+        const previous = history.past.pop()
+        if (!previous) return
+        history.future.push(designRef.current)
+        history.open = false
+        history.held = false
+        syncHistoryFlags()
+        commit(previous)
+        pruneSelection(previous)
+    }, [commit, pruneSelection, syncHistoryFlags])
+
+    const redo = useCallback(() => {
+        const history = historyRef.current
+        const next = history.future.pop()
+        if (!next) return
+        history.past.push(designRef.current)
+        history.open = false
+        history.held = false
+        syncHistoryFlags()
+        commit(next)
+        pruneSelection(next)
+    }, [commit, pruneSelection, syncHistoryFlags])
+
     const update = useCallback(
         <K extends keyof CertificateDesign>(key: K, value: CertificateDesign[K]) => {
             setDesign((current) => ({ ...current, [key]: value }))
         },
-        []
+        [setDesign]
     )
 
-    const patchDesignElement = useCallback((id: ElementId, patch: ElementPatch) => {
-        setDesign((current) => patchElement(current, id, patch))
+    const patchDesignElement = useCallback(
+        (id: ElementId, patch: ElementPatch) => {
+            setDesign((current) => patchElement(current, id, patch))
+        },
+        [setDesign]
+    )
+
+    const setSelection = useCallback<React.Dispatch<React.SetStateAction<Selection | null>>>((action) => {
+        setPicked((current) => {
+            const primary = typeof action === "function" ? action(current.primary) : action
+            if (sameSelection(primary, current.primary) && current.others.length === 0) return current
+            return { primary, others: NO_OTHERS }
+        })
     }, [])
+
+    const toggleSelection = useCallback((target: Selection) => {
+        setPicked((current) => {
+            const key = selectionKey(target)
+            if (!current.primary) return { primary: target, others: NO_OTHERS }
+            if (selectionKey(current.primary) === key) {
+                // Taking the main selection out promotes the next one.
+                const [first, ...rest] = current.others
+                return { primary: first ?? null, others: rest.length > 0 ? rest : NO_OTHERS }
+            }
+            if (current.others.some((item) => selectionKey(item) === key)) {
+                const rest = current.others.filter((item) => selectionKey(item) !== key)
+                return { ...current, others: rest.length > 0 ? rest : NO_OTHERS }
+            }
+            return { ...current, others: [...current.others, target] }
+        })
+    }, [])
+
+    const selections = useMemo(
+        () => cleanSelections(design, picked.primary ? [picked.primary, ...picked.others] : []),
+        [design, picked]
+    )
+
+    const setStageOption = useCallback(
+        <K extends keyof StageOptions>(key: K, value: StageOptions[K]) => {
+            setStageOptions((current) => (current[key] === value ? current : { ...current, [key]: value }))
+        },
+        []
+    )
 
     const updateText = useCallback(
         (id: TextElementId, text: string) => patchDesignElement(id, { text }),
@@ -158,7 +361,7 @@ export function useDesigner(options: DesignerOptions): Designer {
 
     const selectElement = useCallback(
         (id: ElementId | null) => setSelection(id ? { kind: "element", id } : null),
-        []
+        [setSelection]
     )
 
     const handleBackgroundFile = useCallback(
@@ -182,7 +385,7 @@ export function useDesigner(options: DesignerOptions): Designer {
                 backgroundSourceRef.current = { name: file.name, file }
                 setBackground(image)
                 setBackgroundName(file.name)
-                setDesign((current) => ({ ...current, mode: "upload", width, height }))
+                replaceDesign((current) => ({ ...current, mode: "upload", width, height }))
             }
             image.onerror = () => {
                 URL.revokeObjectURL(url)
@@ -190,7 +393,7 @@ export function useDesigner(options: DesignerOptions): Designer {
             }
             image.src = url
         },
-        [reportChange, reportError]
+        [replaceDesign, reportChange, reportError]
     )
 
     const clearBackground = useCallback(() => {
@@ -204,8 +407,8 @@ export function useDesigner(options: DesignerOptions): Designer {
         setBackground(null)
         setBackgroundName("")
         const size = SIZE_PRESETS[0]
-        setDesign((current) => applyPageSize({ ...current, mode: "builtin" }, size.width, size.height))
-    }, [reportChange, reportError])
+        replaceDesign((current) => applyPageSize({ ...current, mode: "builtin" }, size.width, size.height))
+    }, [replaceDesign, reportChange, reportError])
 
     /** The artwork as a data URL, ready to embed in a template. Cached after the first read. */
     const getBackgroundEmbed = useCallback(async (): Promise<TemplateBackground | null> => {
@@ -257,13 +460,13 @@ export function useDesigner(options: DesignerOptions): Designer {
                 setBackgroundName("")
             }
 
-            setDesign(nextDesign)
+            replaceDesign(nextDesign)
             setSelection((current) => (current && current.kind !== "element" ? { kind: "element", id: "name" } : current))
             setTemplateVersion((version) => version + 1)
             reportChange()
             return warning
         },
-        [reportChange]
+        [replaceDesign, reportChange, setSelection]
     )
 
     const downloadTemplate = useCallback(async () => {
@@ -311,13 +514,13 @@ export function useDesigner(options: DesignerOptions): Designer {
         backgroundSourceRef.current = null
         setBackground(null)
         setBackgroundName("")
-        setDesign((optionsRef.current.createDesign ?? createDefaultDesign)())
+        replaceDesign((optionsRef.current.createDesign ?? createDefaultDesign)())
         setSelection({ kind: "element", id: "name" })
         setTemplateVersion((version) => version + 1)
         setNotice("")
         reportError("")
         reportChange()
-    }, [reportChange, reportError])
+    }, [replaceDesign, reportChange, reportError, setSelection])
 
     const refreshAssets = useCallback(() => {
         void loadDesignImages(designRef.current).then(() => setAssetVersion((version) => version + 1))
@@ -340,10 +543,6 @@ export function useDesigner(options: DesignerOptions): Designer {
             cancelled = true
         }
     }, [applyTemplate, autosaveKey])
-
-    useEffect(() => {
-        designRef.current = design
-    }, [design])
 
     // Canvas text never triggers a font download, so fetch the fonts the design uses and redraw once they arrive.
     const fontSpecs = designFontSpecs(design).join("|")
@@ -418,6 +617,18 @@ export function useDesigner(options: DesignerOptions): Designer {
         selection,
         setSelection,
         selectElement,
+        toggleSelection,
+        selections,
+        canUndo,
+        canRedo,
+        undo,
+        redo,
+        checkpoint,
+        beginGesture,
+        endGesture,
+        resetHistory,
+        stageOptions,
+        setStageOption,
         background,
         backgroundName,
         handleBackgroundFile,

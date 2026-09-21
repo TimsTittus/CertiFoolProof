@@ -1,12 +1,15 @@
 "use client"
 
 import {
+    BODY_MAX_LINES,
+    DEFAULT_MAX_LINES,
     ELEMENT_IDS,
     ELEMENT_LABELS,
     FONT_OPTIONS,
     FONT_WEIGHTS,
     MAX_TEXT_LINES,
     MIN_MAX_WIDTH,
+    NO_LINE_LIMIT,
     TEXT_FIT_OPTIONS,
     getElement,
     isElementVisible,
@@ -364,16 +367,44 @@ function ElementFields({ design, id, onArtwork, onPatch, tokens }: ElementFields
                                     : "Breaks into lines, then gets smaller until it fits inside the lines allowed."}
                         </p>
                         {wraps ? (
-                            <RangeField
-                                id={fieldId("lines")}
-                                label="Lines allowed"
-                                display={String(Math.round(element.maxLines))}
-                                value={element.maxLines}
-                                min={1}
-                                max={MAX_TEXT_LINES}
-                                step={1}
-                                onChange={(maxLines) => patch({ maxLines })}
-                            />
+                            <div className="space-y-2">
+                                {element.maxLines !== NO_LINE_LIMIT ? (
+                                    <RangeField
+                                        id={fieldId("lines")}
+                                        label="Lines allowed"
+                                        display={String(Math.round(element.maxLines))}
+                                        value={element.maxLines}
+                                        min={1}
+                                        max={MAX_TEXT_LINES}
+                                        step={1}
+                                        onChange={(maxLines) => patch({ maxLines })}
+                                    />
+                                ) : null}
+                                <label className="flex items-center gap-2 font-black uppercase text-[11px] cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={element.maxLines === NO_LINE_LIMIT}
+                                        onChange={(event) =>
+                                            patch({
+                                                maxLines: event.target.checked
+                                                    ? NO_LINE_LIMIT
+                                                    : isBody
+                                                        ? BODY_MAX_LINES
+                                                        : DEFAULT_MAX_LINES,
+                                            })
+                                        }
+                                        className={checkboxClass}
+                                    />
+                                    No line limit
+                                </label>
+                                <p className="font-bold text-[11px] text-black/60">
+                                    {element.maxLines === NO_LINE_LIMIT
+                                        ? "Takes as many lines as the text needs, however long it is."
+                                        : isBody
+                                            ? "The body stops after this many lines (3 to begin with). Raise it, or tick No line limit."
+                                            : "Anything past this many lines is cut off. Raise it, or tick No line limit."}
+                                </p>
+                            </div>
                         ) : null}
                     </div>
                 ) : null}

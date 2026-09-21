@@ -99,7 +99,7 @@ export interface TextElement {
     maxWidth: number
     /** How text longer than `maxWidth` is made to fit. */
     fit: TextFit
-    /** Most lines a wrapping element may take. Ignored when the text only shrinks. */
+    /** Most lines a wrapping element may take; 0 (`NO_LINE_LIMIT`) takes as many as it needs. Ignored when the text only shrinks. */
     maxLines: number
     /** 10 - 100. */
     opacity: number
@@ -160,6 +160,8 @@ export interface SignatoryLine {
 
 export interface Signatory {
     id: string
+    /** False hides the whole signatory (name, title, line and signature) but keeps its place in the order. */
+    visible: boolean
     name: string
     title: string
     line: SignatoryLine
@@ -207,6 +209,44 @@ export function sameSelection(a: Selection | null, b: Selection | null): boolean
     return a.kind === b.kind && a.id === b.id
 }
 
+/** Identifies one selectable thing, e.g. "logo:abc" or "element:name". */
+export function selectionKey(selection: Selection): string {
+    return `${selection.kind}:${selection.id}`
+}
+
+/**
+ * The stacking layer a selection belongs to. A signature is drawn together with its
+ * signatory, so both share one layer.
+ */
+export function layerKeyOf(selection: Selection): string {
+    return selection.kind === "signature" ? `signatory:${selection.id}` : selectionKey(selection)
+}
+
+/** Stacking used until somebody reorders anything: logos, text, signatories, then the name on top. */
+export function defaultLayerOrder(design: CertificateDesign): string[] {
+    return [
+        ...design.logos.map((logo) => `logo:${logo.id}`),
+        ...DRAW_ORDER.map((id) => `element:${id}`),
+        ...design.signatories.map((signatory) => `signatory:${signatory.id}`),
+        "element:name",
+    ]
+}
+
+/** Every layer that exists, bottom to top: the saved order first, then anything it does not mention. */
+export function resolveLayerOrder(design: CertificateDesign): string[] {
+    const base = defaultLayerOrder(design)
+    const valid = new Set(base)
+    const seen = new Set<string>()
+    const ordered: string[] = []
+    for (const key of design.layers) {
+        if (valid.has(key) && !seen.has(key)) {
+            seen.add(key)
+            ordered.push(key)
+        }
+    }
+    return [...ordered, ...base.filter((key) => !seen.has(key))]
+}
+
 export interface CertificateDesign {
     mode: TemplateMode
     preset: PresetId
@@ -227,6 +267,14 @@ export interface CertificateDesign {
     signatories: Signatory[]
     signatoryLayout: SignatoryLayout
     logos: Logo[]
+
+    /**
+     * Stacking order, bottom to top, as layer keys (see `layerKeyOf`). Anything not listed
+     * sits above everything that is, in its default order, so an empty list is the default stacking.
+     */
+    layers: string[]
+    /** Selection keys (see `selectionKey`) that cannot be moved, resized or removed on the preview. */
+    locked: string[]
 }
 
 /** Any change that can be applied to a text element. */
@@ -325,8 +373,14 @@ export const MAX_COLUMNS = 6
 
 export const MIN_MAX_WIDTH = 5
 
-/** Most lines any wrapping element may take. */
+/** Most lines any wrapping element may take before the cap is lifted altogether. */
 export const MAX_TEXT_LINES = 12
+
+/** `maxLines` value that lifts the cap: the text wraps onto as many lines as it needs. */
+export const NO_LINE_LIMIT = 0
+
+/** Lines the body may take on a new design; it can be raised or removed. */
+export const BODY_MAX_LINES = 3
 
 export const TEXT_FIT_OPTIONS: { label: string; value: TextFit }[] = [
     { label: "Shrink", value: "shrink" },
@@ -346,7 +400,8 @@ export const PRESET_PALETTES: Record<PresetId, { background: string; accent: str
     minimal: { background: "#FFFFFF", accent: "#2563EB", ink: "#111827" },
 }
 
-const DEFAULT_MAX_LINES = 6
+/** Lines a wrapping element may take unless it says otherwise. */
+export const DEFAULT_MAX_LINES = 6
 const DEFAULT_LINE_HEIGHT = 1.55
 
 export function defaultDateText(): string {
@@ -455,6 +510,7 @@ export function createSignatoryLine(): SignatoryLine {
 
 export function createSignatory(id: string, overrides: Partial<Omit<Signatory, "id">> = {}): Signatory {
     return {
+        visible: true,
         name: "Full Name",
         title: "Title or Role",
         line: createSignatoryLine(),
@@ -554,6 +610,7 @@ export function createPresetElements(
                 lineHeight: 40 / 25,
                 maxWidth: widthPct(width / u - 320),
                 fit: "wrap",
+                maxLines: BODY_MAX_LINES,
             }),
             ...footers,
         }
@@ -583,6 +640,7 @@ export function createPresetElements(
                 lineHeight: 40 / 26,
                 maxWidth: widthPct(width / u - 320),
                 fit: "wrap",
+                maxLines: BODY_MAX_LINES,
             }),
             ...footers,
         }
@@ -610,6 +668,7 @@ export function createPresetElements(
                 lineHeight: 42 / 27,
                 maxWidth: widthPct(width / u - 300),
                 fit: "wrap",
+                maxLines: BODY_MAX_LINES,
             }),
             ...footers,
         }
@@ -657,6 +716,8 @@ export function createDefaultDesign(): CertificateDesign {
         signatories: [createSignatory("s1", { title: "Event Coordinator" })],
         signatoryLayout: createSignatoryLayout(size.width, size.height),
         logos: [],
+        layers: [],
+        locked: [],
     }
 }
 
@@ -899,9 +960,12 @@ export function reorderSignatory(design: CertificateDesign, id: string, toIndex:
     return { ...design, signatories }
 }
 
+/** Where a logo starts out, in percent of the page: the top-left corner. */
+export const DEFAULT_LOGO_POSITION = { x: 14, y: 14 }
+
 /** Adds a logo in the top-left corner, ready to be dragged into place. */
 export function addLogo(design: CertificateDesign, id: string, src: string): CertificateDesign {
-    const logo: Logo = { id, src, x: 14, y: 14, width: 12, opacity: 100, radius: 0, visible: true }
+    const logo: Logo = { id, src, x: DEFAULT_LOGO_POSITION.x, y: DEFAULT_LOGO_POSITION.y, width: 12, opacity: 100, radius: 0, visible: true }
     return { ...design, logos: [...design.logos, logo] }
 }
 
@@ -991,6 +1055,13 @@ function wrapLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number
     return lines
 }
 
+/** How many lines a wrapping element may take. Infinity when the cap has been lifted. */
+function lineCap(element: TextElement): number {
+    if (element.maxLines === NO_LINE_LIMIT) return Infinity
+    if (!Number.isFinite(element.maxLines)) return DEFAULT_MAX_LINES
+    return Math.max(1, Math.round(element.maxLines))
+}
+
 interface TextGeometry {
     lines: string[]
     /** True when the text had to be made smaller, or lines had to be dropped, to fit. */
@@ -1040,7 +1111,7 @@ function layoutText(
         }
     }
 
-    const maxLines = Math.max(1, Math.round(element.maxLines || DEFAULT_MAX_LINES))
+    const maxLines = lineCap(element)
     let lines: string[]
     let fontPx: number
     let overflowed = false
@@ -1557,37 +1628,44 @@ export function renderCertificate(
         else drawClassicFrame(ctx, design)
     }
 
-    for (const logo of design.logos) {
-        if (!logo.visible) continue
-        const box = drawLogo(ctx, design, logo)
-        if (box) layout.logos[logo.id] = box
-    }
-
-    for (const id of DRAW_ORDER) {
-        if (!isElementVisible(design, id, onArtwork)) continue
-        const element = design.elements[id]
-        const drawn = drawTextElement(ctx, design, element, elementTextFor(design, id, who), {
-            color: resolveElementColor(design, id),
-            fit: element.fit,
-            decorate: onArtwork ? null : id,
-        })
-        if (drawn.box) layout.elements[id] = drawn.box
-        if (drawn.overflowed) layout.overflow.push(id)
-    }
-
     const frames = resolveSignatoryFrames(design, onArtwork)
-    design.signatories.forEach((signatory, index) => {
-        layout.signatories[signatory.id] = drawSignatory(ctx, design, signatory, frames[index], onArtwork)
-    })
-
     const nameElement = nudgedNameElement(design.elements.name, who.nudge)
-    const drawnName = drawTextElement(ctx, design, nameElement, elementTextFor(design, "name", who), {
-        color: resolveElementColor(design, "name"),
-        fit: nameElement.fit,
-        decorate: null,
-    })
-    if (drawnName.box) layout.elements.name = drawnName.box
-    if (drawnName.overflowed) layout.overflow.push("name")
+
+    for (const key of resolveLayerOrder(design)) {
+        const separator = key.indexOf(":")
+        const kind = key.slice(0, separator)
+        const id = key.slice(separator + 1)
+
+        if (kind === "logo") {
+            const logo = design.logos.find((item) => item.id === id)
+            if (!logo || !logo.visible) continue
+            const box = drawLogo(ctx, design, logo)
+            if (box) layout.logos[logo.id] = box
+        } else if (kind === "signatory") {
+            const index = design.signatories.findIndex((item) => item.id === id)
+            if (index < 0 || !design.signatories[index].visible) continue
+            layout.signatories[id] = drawSignatory(ctx, design, design.signatories[index], frames[index], onArtwork)
+        } else if (id === "name") {
+            const drawnName = drawTextElement(ctx, design, nameElement, elementTextFor(design, "name", who), {
+                color: resolveElementColor(design, "name"),
+                fit: nameElement.fit,
+                decorate: null,
+            })
+            if (drawnName.box) layout.elements.name = drawnName.box
+            if (drawnName.overflowed) layout.overflow.push("name")
+        } else if (DRAW_ORDER.includes(id as TextElementId)) {
+            const textId = id as TextElementId
+            if (!isElementVisible(design, textId, onArtwork)) continue
+            const element = design.elements[textId]
+            const drawn = drawTextElement(ctx, design, element, elementTextFor(design, textId, who), {
+                color: resolveElementColor(design, textId),
+                fit: element.fit,
+                decorate: onArtwork ? null : textId,
+            })
+            if (drawn.box) layout.elements[textId] = drawn.box
+            if (drawn.overflowed) layout.overflow.push(textId)
+        }
+    }
 
     ctx.restore()
     return layout
