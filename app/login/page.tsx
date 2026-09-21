@@ -46,25 +46,25 @@ function LoginForm() {
 
 
     return (
-        <div className="backdrop-blur-xl bg-white/10 rounded-xl sm:rounded-2xl shadow-2xl border border-white/20 p-5 sm:p-8">
-            <div className="text-center mb-6 sm:mb-8">
-                <h1 className="text-2xl sm:text-3xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-                    CertiFoolProof
+        <div className="bg-white border-3 border-black p-6 sm:p-8 shadow-neo-lg">
+            <div className="text-center mb-6 sm:mb-8 border-b-3 border-black pb-6">
+                <h1 className="text-3xl sm:text-4xl font-black text-black uppercase italic mb-1">
+                    Certi<span className="bg-neo-yellow px-2 border-2 border-black shadow-neo not-italic">Fool</span>Proof
                 </h1>
-                <p className="mt-1.5 sm:mt-2 text-gray-300 text-xs sm:text-sm">
+                <p className="mt-2 text-black font-bold text-xs sm:text-sm uppercase tracking-wider">
                     Secure Certificate Verification Platform
                 </p>
             </div>
 
             {error && (
-                <div className="mb-4 sm:mb-6 p-3 sm:p-4 rounded-lg bg-red-500/20 border border-red-500/30 text-red-200 text-xs sm:text-sm text-center">
+                <div className="mb-6 p-4 border-3 border-black bg-red-500 text-white font-black text-xs sm:text-sm text-center uppercase italic shadow-neo">
                     {error}
                 </div>
             )}
 
-            <form onSubmit={handleSubmit} className="space-y-4 sm:space-y-6">
+            <form onSubmit={handleSubmit} className="space-y-6">
                 <div>
-                    <label htmlFor="email" className="block text-xs sm:text-sm font-medium text-gray-200 mb-1.5 sm:mb-2">
+                    <label htmlFor="email" className="block text-xs sm:text-sm font-black text-black mb-2 uppercase tracking-wider">
                         Email Address
                     </label>
                     <input
@@ -74,13 +74,13 @@ function LoginForm() {
                         onChange={(e) => setEmail(e.target.value)}
                         required
                         autoComplete="email"
-                        className="w-full px-3.5 sm:px-4 py-3 sm:py-3.5 rounded-lg bg-white/5 border border-white/10 text-white text-sm sm:text-base placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-200 appearance-none"
+                        className="w-full px-4 py-3 border-3 border-black bg-white text-black font-bold text-sm sm:text-base placeholder-black/30 focus:outline-none focus:bg-neo-yellow transition-all appearance-none"
                         placeholder="you@example.com"
                     />
                 </div>
 
                 <div>
-                    <label htmlFor="password" className="block text-xs sm:text-sm font-medium text-gray-200 mb-1.5 sm:mb-2">
+                    <label htmlFor="password" className="block text-xs sm:text-sm font-black text-black mb-2 uppercase tracking-wider">
                         Password
                     </label>
                     <input
@@ -90,7 +90,7 @@ function LoginForm() {
                         onChange={(e) => setPassword(e.target.value)}
                         required
                         autoComplete="current-password"
-                        className="w-full px-3.5 sm:px-4 py-3 sm:py-3.5 rounded-lg bg-white/5 border border-white/10 text-white text-sm sm:text-base placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-200 appearance-none"
+                        className="w-full px-4 py-3 border-3 border-black bg-white text-black font-bold text-sm sm:text-base placeholder-black/30 focus:outline-none focus:bg-neo-yellow transition-all appearance-none"
                         placeholder="••••••••"
                     />
                 </div>
@@ -98,15 +98,15 @@ function LoginForm() {
                 <button
                     type="submit"
                     disabled={isLoading}
-                    className="w-full py-3 sm:py-3.5 px-4 rounded-lg bg-gradient-to-r from-blue-600 to-purple-600 text-white text-sm sm:text-base font-medium hover:from-blue-700 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]"
+                    className="w-full py-4 px-6 border-3 border-black bg-neo-yellow shadow-neo hover:shadow-neo-lg hover:-translate-x-1 hover:-translate-y-1 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all duration-100 font-black uppercase text-base sm:text-lg italic disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     {isLoading ? (
                         <span className="flex items-center justify-center gap-2">
-                            <svg className="animate-spin h-4 w-4 sm:h-5 sm:w-5" viewBox="0 0 24 24">
+                            <svg className="animate-spin h-5 w-5 text-black" viewBox="0 0 24 24">
                                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                             </svg>
-                            Signing in...
+                            SIGNING IN...
                         </span>
                     ) : (
                         "Sign In"
@@ -115,9 +115,9 @@ function LoginForm() {
             </form>
 
             {/* Signup link */}
-            <p className="mt-6 sm:mt-8 pt-4 sm:pt-6 border-t border-white/10 text-center text-xs sm:text-sm text-gray-400">
+            <p className="mt-8 pt-6 border-t-3 border-black text-center text-xs sm:text-sm font-bold text-black uppercase">
                 Don&apos;t have an account?{" "}
-                <Link href="/signup" className="text-purple-400 hover:text-purple-300 transition-colors font-medium">
+                <Link href="/signup" className="text-black font-black underline decoration-3 underline-offset-4 hover:bg-neo-yellow px-1">
                     Sign Up
                 </Link>
             </p>
@@ -127,25 +127,19 @@ function LoginForm() {
 
 export default function LoginPage() {
     return (
-        <div className="min-h-screen min-h-[100dvh] flex items-center justify-center bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 relative overflow-hidden px-4 py-6 sm:py-0">
-            <div className="absolute inset-0 overflow-hidden">
-                <div className="absolute -top-20 -right-20 sm:-top-40 sm:-right-40 w-48 h-48 sm:w-80 sm:h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse"></div>
-                <div className="absolute -bottom-20 -left-20 sm:-bottom-40 sm:-left-40 w-48 h-48 sm:w-80 sm:h-80 bg-blue-500 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse delay-1000"></div>
-                <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-64 h-64 sm:w-96 sm:h-96 bg-indigo-500 rounded-full mix-blend-multiply filter blur-3xl opacity-10 animate-pulse delay-500"></div>
-            </div>
-
+        <div className="min-h-screen min-h-[100dvh] flex items-center justify-center bg-neo-mint text-black font-mono px-4 py-8">
             <div className="relative z-10 w-full max-w-md">
                 <Suspense fallback={
-                    <div className="backdrop-blur-xl bg-white/10 rounded-xl sm:rounded-2xl shadow-2xl border border-white/20 p-8 flex items-center justify-center">
-                        <div className="animate-spin h-8 w-8 border-4 border-purple-500 border-t-transparent rounded-full"></div>
+                    <div className="bg-white border-3 border-black p-8 shadow-neo-lg flex items-center justify-center">
+                        <div className="animate-spin h-8 w-8 border-4 border-black border-t-transparent rounded-full"></div>
                     </div>
                 }>
                     <LoginForm />
                 </Suspense>
 
                 {/* Back to home link */}
-                <p className="mt-4 sm:mt-6 text-center pb-[env(safe-area-inset-bottom)]">
-                    <Link href="/" className="text-xs sm:text-sm text-gray-400 hover:text-white active:text-purple-300 transition-colors">
+                <p className="mt-6 text-center">
+                    <Link href="/" className="text-xs sm:text-sm font-black text-black hover:underline decoration-3 underline-offset-4 uppercase tracking-wider bg-white border-2 border-black px-3 py-1 shadow-neo inline-block">
                         ← Back to Home
                     </Link>
                 </p>

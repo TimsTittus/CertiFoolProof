@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import Link from "next/link"
 import { headers } from "next/headers"
 import { getVerificationLogs } from "@/app/actions/admin"
+import Nav from "@/components/Nav/Nav"
 
 export default async function AdminLogsPage() {
     const session = await auth.api.getSession({
@@ -14,16 +15,7 @@ export default async function AdminLogsPage() {
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
-            <nav className="border-b border-white/10 backdrop-blur-lg bg-white/5">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                    <div className="flex items-center justify-between h-16">
-                        <Link href="/" className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">CertiFoolProof</Link>
-                        <div className="flex items-center gap-4">
-                            <Link href="/admin" className="text-gray-300 hover:text-white transition-colors text-sm">← Admin</Link>
-                        </div>
-                    </div>
-                </div>
-            </nav>
+            <Nav links={[{ href: "/admin", label: "← Admin" }]} />
 
             <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
                 <div className="mb-8">
