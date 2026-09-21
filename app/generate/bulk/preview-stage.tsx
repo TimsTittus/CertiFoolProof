@@ -3,31 +3,26 @@
 import { useEffect, useRef, useState } from "react"
 import {
     ELEMENT_LABELS,
+    LOGO_WIDTH_LIMITS,
     MIN_MAX_WIDTH,
+    SIGNATURE_SIZE_LIMITS,
     getElement,
+    moveSignatory,
+    patchLogo,
+    patchSignatureArt,
     renderToCanvas,
+    sameSelection,
     sizeLimits,
     type CertificateDesign,
     type ElementBox,
     type ElementId,
     type ElementPatch,
     type RenderedLayout,
+    type Selection,
 } from "@/lib/bulk/renderer"
 import { clamp } from "./ui"
 
-/** Top-most first when boxes overlap: the name and signature are drawn last, so they win. */
-const HIT_ORDER: ElementId[] = [
-    "organization",
-    "heading",
-    "subheading",
-    "body",
-    "dateLabel",
-    "date",
-    "signatureLabel",
-    "signatureName",
-    "signature",
-    "name",
-]
+const TEXT_HIT_ORDER: ElementId[] = ["organization", "heading", "subheading", "body", "dateLabel", "date"]
 
 const MIN_WRAP_WIDTH = 10
 
@@ -35,10 +30,10 @@ const round1 = (value: number) => Math.round(value * 10) / 10
 const round2 = (value: number) => Math.round(value * 100) / 100
 
 type Interaction =
-    | { kind: "move"; id: ElementId; startX: number; startY: number; originX: number; originY: number }
+    | { kind: "move"; target: Selection; startX: number; startY: number; originX: number; originY: number }
     | {
         kind: "scale"
-        id: ElementId
+        target: Selection
         centerX: number
         centerY: number
         startDistance: number
@@ -59,75 +54,169 @@ const CORNERS: { corner: Corner; style: React.CSSProperties; cursor: string }[] 
 const handleClass =
     "absolute w-3.5 h-3.5 border-2 border-black bg-neo-yellow -translate-x-1/2 -translate-y-1/2 pointer-events-auto"
 
+/** One thing on the preview that can be clicked, dragged and (mostly) resized. */
+interface HitItem {
+    key: string
+    selection: Selection
+    label: string
+    box: ElementBox
+    resizable: boolean
+}
+
 interface PreviewStageProps {
     design: CertificateDesign
     name: string
     background: CanvasImageSource | null
-    selectedId: ElementId | null
-    onSelect: (id: ElementId | null) => void
+    selection: Selection | null
+    onSelect: (selection: Selection | null) => void
     onPatch: (id: ElementId, patch: ElementPatch) => void
-    /** Bumps when web fonts finish loading, so text drawn in a fallback font is redrawn. */
-    fontVersion: number
+    onUpdate: (update: (design: CertificateDesign) => CertificateDesign) => void
+    /** Bumps when web fonts or uploaded pictures finish loading, so anything drawn without them is redrawn. */
+    assetVersion: number
 }
+
+const EMPTY_LAYOUT: RenderedLayout = { elements: {}, signatories: {}, logos: {} }
 
 export function PreviewStage({
     design,
     name,
     background,
-    selectedId,
+    selection,
     onSelect,
     onPatch,
-    fontVersion,
+    onUpdate,
+    assetVersion,
 }: PreviewStageProps) {
     const wrapperRef = useRef<HTMLDivElement | null>(null)
     const canvasRef = useRef<HTMLCanvasElement | null>(null)
     const interaction = useRef<Interaction | null>(null)
-    const [boxes, setBoxes] = useState<RenderedLayout>({})
+    const [layout, setLayout] = useState<RenderedLayout>(EMPTY_LAYOUT)
 
     useEffect(() => {
         const canvas = canvasRef.current
         if (!canvas) return
-        const layout = renderToCanvas(canvas, design, name, background)
-        if (layout) setBoxes(layout)
-    }, [design, name, background, fontVersion])
+        const rendered = renderToCanvas(canvas, design, name, background)
+        if (rendered) setLayout(rendered)
+    }, [design, name, background, assetVersion])
 
-    const beginMove = (event: React.PointerEvent<HTMLElement>, id: ElementId) => {
+    const items: HitItem[] = []
+
+    for (const logo of design.logos) {
+        const box = layout.logos[logo.id]
+        if (box) items.push({ key: `logo:${logo.id}`, selection: { kind: "logo", id: logo.id }, label: "Logo", box, resizable: true })
+    }
+    for (const id of TEXT_HIT_ORDER) {
+        const box = layout.elements[id]
+        if (box) items.push({ key: `element:${id}`, selection: { kind: "element", id }, label: ELEMENT_LABELS[id], box, resizable: true })
+    }
+    for (const signatory of design.signatories) {
+        const box = layout.signatories[signatory.id]?.block
+        if (box) {
+            items.push({
+                key: `signatory:${signatory.id}`,
+                selection: { kind: "signatory", id: signatory.id },
+                label: signatory.name ? `Signatory: ${signatory.name}` : "Signatory",
+                box,
+                resizable: false,
+            })
+        }
+    }
+    for (const signatory of design.signatories) {
+        const box = layout.signatories[signatory.id]?.signature
+        if (box) {
+            items.push({
+                key: `signature:${signatory.id}`,
+                selection: { kind: "signature", id: signatory.id },
+                label: "Signature",
+                box,
+                resizable: true,
+            })
+        }
+    }
+    const nameBox = layout.elements.name
+    if (nameBox) {
+        items.push({ key: "element:name", selection: { kind: "element", id: "name" }, label: ELEMENT_LABELS.name, box: nameBox, resizable: true })
+    }
+
+    const originOf = (target: Selection): { x: number; y: number } | null => {
+        switch (target.kind) {
+            case "element": {
+                const element = getElement(design, target.id)
+                return { x: element.x, y: element.y }
+            }
+            case "signatory": {
+                const frame = layout.signatories[target.id]?.frame
+                if (!frame) return null
+                return { x: (frame.x / design.width) * 100, y: (frame.baselineY / design.height) * 100 }
+            }
+            case "signature": {
+                const art = design.signatories.find((signatory) => signatory.id === target.id)?.signature
+                return art ? { x: art.dx, y: art.dy } : null
+            }
+            case "logo": {
+                const logo = design.logos.find((item) => item.id === target.id)
+                return logo ? { x: logo.x, y: logo.y } : null
+            }
+        }
+    }
+
+    const scaleStartOf = (target: Selection): { size: number; maxWidth: number } | null => {
+        switch (target.kind) {
+            case "element": {
+                const element = getElement(design, target.id)
+                return { size: element.size, maxWidth: element.maxWidth }
+            }
+            case "signature": {
+                const art = design.signatories.find((signatory) => signatory.id === target.id)?.signature
+                return art ? { size: art.size, maxWidth: art.maxWidth } : null
+            }
+            case "logo": {
+                const logo = design.logos.find((item) => item.id === target.id)
+                return logo ? { size: logo.width, maxWidth: 0 } : null
+            }
+            case "signatory":
+                return null
+        }
+    }
+
+    const beginMove = (event: React.PointerEvent<HTMLElement>, target: Selection) => {
         if (event.pointerType === "mouse" && event.button !== 0) return
         event.stopPropagation()
         event.preventDefault()
         event.currentTarget.setPointerCapture(event.pointerId)
 
-        const element = getElement(design, id)
-        onSelect(id)
+        onSelect(target)
+        const origin = originOf(target)
+        if (!origin) return
         interaction.current = {
             kind: "move",
-            id,
+            target,
             startX: event.clientX,
             startY: event.clientY,
-            originX: element.x,
-            originY: element.y,
+            originX: origin.x,
+            originY: origin.y,
         }
     }
 
-    const beginScale = (event: React.PointerEvent<HTMLElement>, id: ElementId, box: ElementBox) => {
+    const beginScale = (event: React.PointerEvent<HTMLElement>, target: Selection, box: ElementBox) => {
         if (event.pointerType === "mouse" && event.button !== 0) return
         const rect = wrapperRef.current?.getBoundingClientRect()
-        if (!rect || rect.width === 0) return
+        const start = scaleStartOf(target)
+        if (!rect || rect.width === 0 || !start) return
         event.stopPropagation()
         event.preventDefault()
         event.currentTarget.setPointerCapture(event.pointerId)
 
         const centerX = rect.left + ((box.x + box.w / 2) / design.width) * rect.width
         const centerY = rect.top + ((box.y + box.h / 2) / design.height) * rect.height
-        const element = getElement(design, id)
         interaction.current = {
             kind: "scale",
-            id,
+            target,
             centerX,
             centerY,
             startDistance: Math.max(8, Math.hypot(event.clientX - centerX, event.clientY - centerY)),
-            startSize: element.size,
-            startMaxWidth: element.maxWidth,
+            startSize: start.size,
+            startMaxWidth: start.maxWidth,
         }
     }
 
@@ -148,6 +237,60 @@ export function PreviewStage({
         }
     }
 
+    const applyMove = (target: Selection, x: number, y: number) => {
+        switch (target.kind) {
+            case "element":
+                onPatch(target.id, { x: round1(clamp(x, 0, 100)), y: round1(clamp(y, 0, 100)) })
+                break
+            case "signatory":
+                onUpdate((current) => moveSignatory(current, target.id, round1(clamp(x, 0, 100)), round1(clamp(y, 0, 100))))
+                break
+            case "signature":
+                onUpdate((current) =>
+                    patchSignatureArt(current, target.id, { dx: round1(clamp(x, -100, 100)), dy: round1(clamp(y, -100, 100)) })
+                )
+                break
+            case "logo":
+                onUpdate((current) => patchLogo(current, target.id, { x: round1(clamp(x, 0, 100)), y: round1(clamp(y, 0, 100)) }))
+                break
+        }
+    }
+
+    const applyScale = (active: Extract<Interaction, { kind: "scale" }>, factor: number) => {
+        const { target, startSize, startMaxWidth } = active
+        switch (target.kind) {
+            case "element": {
+                const limits = sizeLimits()
+                // Scale text and its wrap width together so the whole block grows or shrinks as one object.
+                const size = clamp(startSize * factor, limits.min, limits.max)
+                const ratio = size / startSize
+                onPatch(target.id, {
+                    size: round2(size),
+                    maxWidth: round2(clamp(startMaxWidth * ratio, MIN_MAX_WIDTH, 100)),
+                })
+                break
+            }
+            case "signature": {
+                const size = clamp(startSize * factor, SIGNATURE_SIZE_LIMITS.min, SIGNATURE_SIZE_LIMITS.max)
+                const ratio = size / startSize
+                onUpdate((current) =>
+                    patchSignatureArt(current, target.id, {
+                        size: round2(size),
+                        maxWidth: round2(clamp(startMaxWidth * ratio, MIN_MAX_WIDTH, 100)),
+                    })
+                )
+                break
+            }
+            case "logo": {
+                const width = clamp(startSize * factor, LOGO_WIDTH_LIMITS.min, LOGO_WIDTH_LIMITS.max)
+                onUpdate((current) => patchLogo(current, target.id, { width: round2(width) }))
+                break
+            }
+            case "signatory":
+                break
+        }
+    }
+
     const handleMove = (event: React.PointerEvent<HTMLElement>) => {
         const active = interaction.current
         const rect = wrapperRef.current?.getBoundingClientRect()
@@ -156,17 +299,10 @@ export function PreviewStage({
         if (active.kind === "move") {
             const x = active.originX + ((event.clientX - active.startX) / rect.width) * 100
             const y = active.originY + ((event.clientY - active.startY) / rect.height) * 100
-            onPatch(active.id, { x: round1(clamp(x, 0, 100)), y: round1(clamp(y, 0, 100)) })
+            applyMove(active.target, x, y)
         } else if (active.kind === "scale") {
             const distance = Math.hypot(event.clientX - active.centerX, event.clientY - active.centerY)
-            const limits = sizeLimits(active.id)
-            // Scale text and its wrap width together so the whole block grows or shrinks as one object.
-            const size = clamp(active.startSize * (distance / active.startDistance), limits.min, limits.max)
-            const ratio = size / active.startSize
-            onPatch(active.id, {
-                size: round2(size),
-                maxWidth: round2(clamp(active.startMaxWidth * ratio, MIN_MAX_WIDTH, 100)),
-            })
+            applyScale(active, distance / active.startDistance)
         } else {
             const delta = ((event.clientX - active.startX) / rect.width) * 100
             const maxWidth = active.startMaxWidth + active.direction * delta * active.factor
@@ -190,20 +326,19 @@ export function PreviewStage({
             <canvas ref={canvasRef} className="w-full h-auto block select-none" />
 
             <div className="pointer-events-none absolute inset-0">
-                {HIT_ORDER.map((id) => {
-                    const box = boxes[id]
-                    if (!box) return null
-                    const selected = id === selectedId
-                    const element = getElement(design, id)
-                    const wraps = id === "body"
+                {items.map((item) => {
+                    const { box, selection: target } = item
+                    const selected = sameSelection(selection, target)
+                    const wraps = target.kind === "element" && target.id === "body"
+                    const alignment = target.kind === "element" ? getElement(design, target.id).align : "center"
 
                     return (
                         <div
-                            key={id}
+                            key={item.key}
                             role="button"
-                            aria-label={`${ELEMENT_LABELS[id]}${selected ? " (selected)" : ""}`}
+                            aria-label={`${item.label}${selected ? " (selected)" : ""}`}
                             aria-pressed={selected}
-                            onPointerDown={(event) => beginMove(event, id)}
+                            onPointerDown={(event) => beginMove(event, target)}
                             onPointerMove={handleMove}
                             onPointerUp={endInteraction}
                             onPointerCancel={endInteraction}
@@ -224,27 +359,29 @@ export function PreviewStage({
                         >
                             {selected ? (
                                 <>
-                                    <span className="pointer-events-none absolute left-0 bottom-full mb-2 whitespace-nowrap bg-black text-white text-[10px] font-black uppercase px-1.5 py-0.5">
-                                        {ELEMENT_LABELS[id]}
+                                    <span className="pointer-events-none absolute left-0 bottom-full mb-2 max-w-[16rem] truncate whitespace-nowrap bg-black text-white text-[10px] font-black uppercase px-1.5 py-0.5">
+                                        {item.label}
                                     </span>
 
-                                    {CORNERS.map(({ corner, style, cursor }) => (
-                                        <span
-                                            key={corner}
-                                            data-handle={`scale-${corner}`}
-                                            className={handleClass}
-                                            style={{ ...style, cursor, touchAction: "none" }}
-                                            onPointerDown={(event) => beginScale(event, id, box)}
-                                        />
-                                    ))}
+                                    {item.resizable
+                                        ? CORNERS.map(({ corner, style, cursor }) => (
+                                            <span
+                                                key={corner}
+                                                data-handle={`scale-${corner}`}
+                                                className={handleClass}
+                                                style={{ ...style, cursor, touchAction: "none" }}
+                                                onPointerDown={(event) => beginScale(event, target, box)}
+                                            />
+                                        ))
+                                        : null}
 
-                                    {wraps
+                                    {wraps && target.kind === "element"
                                         ? ([-1, 1] as const)
                                             .filter(
                                                 (direction) =>
-                                                    element.align === "center" ||
-                                                    (element.align === "left" && direction === 1) ||
-                                                    (element.align === "right" && direction === -1)
+                                                    alignment === "center" ||
+                                                    (alignment === "left" && direction === 1) ||
+                                                    (alignment === "right" && direction === -1)
                                             )
                                             .map((direction) => (
                                                 <span
@@ -257,7 +394,7 @@ export function PreviewStage({
                                                         cursor: "ew-resize",
                                                         touchAction: "none",
                                                     }}
-                                                    onPointerDown={(event) => beginWidth(event, id, direction)}
+                                                    onPointerDown={(event) => beginWidth(event, target.id, direction)}
                                                 />
                                             ))
                                         : null}

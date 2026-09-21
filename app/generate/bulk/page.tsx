@@ -9,13 +9,14 @@ import {
     createDefaultDesign,
     designFontSpecs,
     loadDesignFonts,
+    loadDesignImages,
     patchElement,
     renderCertificate,
     type CertificateDesign,
     type ElementId,
     type ElementPatch,
     type PresetId,
-    type SignatureChange,
+    type Selection,
     type TextElementId,
 } from "@/lib/bulk/renderer"
 import {
@@ -36,7 +37,9 @@ import {
     type TemplateBackground,
 } from "@/lib/bulk/template"
 import { ElementPanel } from "./element-panel"
+import { LogoPanel } from "./logo-panel"
 import { PreviewStage } from "./preview-stage"
+import { SignatoryPanel } from "./signatory-panel"
 import { buttonClass, cardClass, inputClass, labelClass, smallButtonClass } from "./ui"
 
 /** Keeps a single batch inside what a browser tab can comfortably hold in memory. */
@@ -117,14 +120,14 @@ export default function BulkGeneratePage() {
     const backgroundUrlRef = useRef<string | null>(null)
     const backgroundSourceRef = useRef<BackgroundSource | null>(null)
 
-    const [selectedId, setSelectedId] = useState<ElementId | null>("name")
+    const [selection, setSelection] = useState<Selection | null>({ kind: "element", id: "name" })
     const [hydrated, setHydrated] = useState(false)
     // Bumped whenever a whole design is swapped in, so editors that keep their own state start over.
     const [templateVersion, setTemplateVersion] = useState(0)
     const [notice, setNotice] = useState("")
     const [autosave, setAutosave] = useState<AutosaveOutcome | null>(null)
     const designRef = useRef(design)
-    const [fontVersion, setFontVersion] = useState(0)
+    const [assetVersion, setAssetVersion] = useState(0)
 
     const [source, setSource] = useState<NameSource>("csv")
     const [csv, setCsv] = useState<CsvState | null>(null)
@@ -156,9 +159,10 @@ export default function BulkGeneratePage() {
         [patchDesignElement]
     )
 
-    const changeSignature = useCallback((change: SignatureChange) => {
-        setDesign((current) => ({ ...current, signature: { ...current.signature, ...change } }))
-    }, [])
+    const selectElement = useCallback(
+        (id: ElementId | null) => setSelection(id ? { kind: "element", id } : null),
+        []
+    )
 
     const names = useMemo(() => {
         if (source === "paste") return parseNameList(pasted)
@@ -295,6 +299,7 @@ export default function BulkGeneratePage() {
             }
 
             setDesign(nextDesign)
+            setSelection((current) => (current && current.kind !== "element" ? { kind: "element", id: "name" } : current))
             setTemplateVersion((version) => version + 1)
             setResult(null)
             return warning
@@ -348,7 +353,7 @@ export default function BulkGeneratePage() {
         setBackground(null)
         setBackgroundName("")
         setDesign(createDefaultDesign())
-        setSelectedId("name")
+        setSelection({ kind: "element", id: "name" })
         setTemplateVersion((version) => version + 1)
         setNotice("")
         setError("")
@@ -380,12 +385,22 @@ export default function BulkGeneratePage() {
     useEffect(() => {
         let cancelled = false
         void loadDesignFonts(designRef.current).then((usedWebFont) => {
-            if (usedWebFont && !cancelled) setFontVersion((version) => version + 1)
+            if (usedWebFont && !cancelled) setAssetVersion((version) => version + 1)
         })
         return () => {
             cancelled = true
         }
     }, [fontSpecs])
+
+    useEffect(() => {
+        let cancelled = false
+        void loadDesignImages(designRef.current).then((loaded) => {
+            if (loaded && !cancelled) setAssetVersion((version) => version + 1)
+        })
+        return () => {
+            cancelled = true
+        }
+    }, [design.signatories, design.logos])
 
     // Autosave shortly after each change, and once more as the page is left so nothing is lost.
     useEffect(() => {
@@ -472,6 +487,7 @@ export default function BulkGeneratePage() {
         setError("")
         try {
             await loadDesignFonts(exportDesign)
+            await loadDesignImages(exportDesign)
             const canvas = document.createElement("canvas")
             canvas.width = exportDesign.width
             canvas.height = exportDesign.height
@@ -497,6 +513,7 @@ export default function BulkGeneratePage() {
 
         try {
             await loadDesignFonts(exportDesign)
+            await loadDesignImages(exportDesign)
             const canvas = document.createElement("canvas")
             canvas.width = exportDesign.width
             canvas.height = exportDesign.height
@@ -649,7 +666,7 @@ export default function BulkGeneratePage() {
                                         {autosave === "failed"
                                             ? "Autosave is unavailable in this browser - save the template to keep your work."
                                             : autosave === "saved-without-artwork"
-                                                ? "Autosaved. Your uploaded artwork is too large to autosave - save the template file to keep it."
+                                                ? "Autosaved, but your uploaded artwork or images are too large to keep in this browser - save the template file to keep them."
                                                 : "Your design is autosaved in this browser, so a refresh will not lose it."}
                                     </p>
                                 </div>
@@ -875,29 +892,10 @@ export default function BulkGeneratePage() {
                                                 onChange={(event) => updateText("date", event.target.value)}
                                             />
                                         </div>
-                                        <div>
-                                            <label className={labelClass} htmlFor="right-label">
-                                                Signature label
-                                            </label>
-                                            <input
-                                                id="right-label"
-                                                className={inputClass}
-                                                value={design.elements.signatureLabel.text}
-                                                onChange={(event) => updateText("signatureLabel", event.target.value)}
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className={labelClass} htmlFor="right-value">
-                                                Signature name
-                                            </label>
-                                            <input
-                                                id="right-value"
-                                                className={inputClass}
-                                                value={design.elements.signatureName.text}
-                                                onChange={(event) => updateText("signatureName", event.target.value)}
-                                            />
-                                        </div>
                                     </div>
+                                    <p className="font-bold text-[11px] text-black/60">
+                                        Names, titles and signatures of the people signing are set in step 3.
+                                    </p>
                                 </div>
                             )}
                         </section>
@@ -911,17 +909,49 @@ export default function BulkGeneratePage() {
 
                             <ElementPanel
                                 design={design}
-                                selectedId={selectedId}
-                                padKey={templateVersion}
-                                onSelect={setSelectedId}
+                                selectedId={selection?.kind === "element" ? selection.id : null}
+                                onSelect={selectElement}
                                 onPatch={patchDesignElement}
-                                onSignatureChange={changeSignature}
                             />
                         </section>
 
                         <section className={cardClass}>
                             <StepHeading
                                 step={3}
+                                title="Signatories and logos"
+                                hint="Add as many signatories as you need, each with a signature, and place your logos."
+                            />
+
+                            <div className="space-y-8">
+                                <div>
+                                    <h3 className="mb-3 font-black uppercase italic text-sm border-b-3 border-black pb-1">
+                                        Signatories
+                                    </h3>
+                                    <SignatoryPanel
+                                        design={design}
+                                        selection={selection}
+                                        padKey={templateVersion}
+                                        onSelect={setSelection}
+                                        onUpdate={setDesign}
+                                    />
+                                </div>
+                                <div>
+                                    <h3 className="mb-3 font-black uppercase italic text-sm border-b-3 border-black pb-1">
+                                        Logos
+                                    </h3>
+                                    <LogoPanel
+                                        design={design}
+                                        selection={selection}
+                                        onSelect={setSelection}
+                                        onUpdate={setDesign}
+                                    />
+                                </div>
+                            </div>
+                        </section>
+
+                        <section className={cardClass}>
+                            <StepHeading
+                                step={4}
                                 title="Add the participants"
                                 hint="Upload a CSV, or paste one name per line."
                             />
@@ -1058,10 +1088,11 @@ export default function BulkGeneratePage() {
                                         design={design}
                                         name={previewName}
                                         background={background}
-                                        selectedId={selectedId}
-                                        onSelect={setSelectedId}
+                                        selection={selection}
+                                        onSelect={setSelection}
                                         onPatch={patchDesignElement}
-                                        fontVersion={fontVersion}
+                                        onUpdate={setDesign}
+                                        assetVersion={assetVersion}
                                     />
                                 </div>
                                 <p className="font-bold text-xs text-black/70 mt-3">
@@ -1070,7 +1101,7 @@ export default function BulkGeneratePage() {
                             </section>
 
                             <section className={cardClass}>
-                                <StepHeading step={4} title="Download the ZIP" />
+                                <StepHeading step={5} title="Download the ZIP" />
 
                                 <div className="space-y-4">
                                     <div className="grid grid-cols-2 gap-3">
