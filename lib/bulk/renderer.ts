@@ -783,9 +783,14 @@ export function patchElement(
     id: ElementId,
     patch: ElementPatch
 ): CertificateDesign {
+    const existing = design.elements[id]
+    if (!existing) return design
+    const entries = Object.entries(patch) as [keyof ElementPatch, unknown][]
+    const hasDiff = entries.some(([k, v]) => v !== undefined && existing[k] !== v)
+    if (!hasDiff) return design
     return {
         ...design,
-        elements: { ...design.elements, [id]: { ...design.elements[id], ...patch } },
+        elements: { ...design.elements, [id]: { ...existing, ...patch } },
     }
 }
 
@@ -887,6 +892,10 @@ export function patchSignatoryLayout(design: CertificateDesign, patch: Partial<S
 
 /** Places a signatory's column (centre x, line y, both in percent). Free placement is switched on if needed. */
 export function moveSignatory(design: CertificateDesign, id: string, x: number, y: number): CertificateDesign {
+    const existing = design.signatories.find((s) => s.id === id)
+    if (existing && existing.x === x && existing.y === y && design.signatoryLayout.arrange === "free") {
+        return design
+    }
     const frozen = freezeSignatoryPositions(design)
     return {
         ...frozen,
@@ -899,6 +908,11 @@ export function patchSignatory(
     id: string,
     patch: Partial<Omit<Signatory, "id">>
 ): CertificateDesign {
+    const existing = design.signatories.find((s) => s.id === id)
+    if (!existing) return design
+    const entries = Object.entries(patch) as [keyof Omit<Signatory, "id">, unknown][]
+    const hasDiff = entries.some(([k, v]) => v !== undefined && existing[k] !== v)
+    if (!hasDiff) return design
     return {
         ...design,
         signatories: design.signatories.map((signatory) => (signatory.id === id ? { ...signatory, ...patch } : signatory)),
@@ -906,6 +920,11 @@ export function patchSignatory(
 }
 
 export function patchSignatoryLine(design: CertificateDesign, id: string, patch: Partial<SignatoryLine>): CertificateDesign {
+    const existing = design.signatories.find((s) => s.id === id)
+    if (!existing) return design
+    const entries = Object.entries(patch) as [keyof SignatoryLine, unknown][]
+    const hasDiff = entries.some(([k, v]) => v !== undefined && existing.line[k] !== v)
+    if (!hasDiff) return design
     return {
         ...design,
         signatories: design.signatories.map((signatory) =>
@@ -915,6 +934,11 @@ export function patchSignatoryLine(design: CertificateDesign, id: string, patch:
 }
 
 export function patchSignatureArt(design: CertificateDesign, id: string, patch: Partial<SignatureArt>): CertificateDesign {
+    const existing = design.signatories.find((s) => s.id === id)
+    if (!existing) return design
+    const entries = Object.entries(patch) as [keyof SignatureArt, unknown][]
+    const hasDiff = entries.some(([k, v]) => v !== undefined && existing.signature[k] !== v)
+    if (!hasDiff) return design
     return {
         ...design,
         signatories: design.signatories.map((signatory) =>
@@ -970,6 +994,11 @@ export function addLogo(design: CertificateDesign, id: string, src: string): Cer
 }
 
 export function patchLogo(design: CertificateDesign, id: string, patch: Partial<Omit<Logo, "id">>): CertificateDesign {
+    const existing = design.logos.find((l) => l.id === id)
+    if (!existing) return design
+    const entries = Object.entries(patch) as [keyof Omit<Logo, "id">, unknown][]
+    const hasDiff = entries.some(([k, v]) => v !== undefined && existing[k] !== v)
+    if (!hasDiff) return design
     return { ...design, logos: design.logos.map((logo) => (logo.id === id ? { ...logo, ...patch } : logo)) }
 }
 

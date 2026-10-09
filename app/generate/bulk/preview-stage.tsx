@@ -46,6 +46,8 @@ type Interaction =
         box: ElementBox
         /** What it may snap to. Null when snapping is off. */
         targets: SnapTargets | null
+        lastClientX?: number
+        lastClientY?: number
     }
     | {
         kind: "scale"
@@ -55,8 +57,9 @@ type Interaction =
         startDistance: number
         startSize: number
         startMaxWidth: number
+        lastDistance?: number
     }
-    | { kind: "width"; id: ElementId; startX: number; startMaxWidth: number; direction: 1 | -1; factor: 1 | 2 }
+    | { kind: "width"; id: ElementId; startX: number; startMaxWidth: number; direction: 1 | -1; factor: 1 | 2; lastClientX?: number }
 
 type Corner = "nw" | "ne" | "sw" | "se"
 
@@ -349,27 +352,48 @@ export function PreviewStage({
 
     /** `round` is coarser while free-dragging; a snapped position keeps a finer one so it lands exactly on its guide. */
     const applyMove = (target: Selection, x: number, y: number, round: (value: number) => number) => {
+        const nextX = round(clamp(x, 0, 100))
+        const nextY = round(clamp(y, 0, 100))
         switch (target.kind) {
             case "element": {
                 const offsetX = target.id === "name" && nameNudge ? nameNudge.dx : 0
                 const offsetY = target.id === "name" && nameNudge ? nameNudge.dy : 0
-                onPatch(target.id, {
-                    x: round(clamp(x - offsetX, 0, 100)),
-                    y: round(clamp(y - offsetY, 0, 100)),
-                })
+                const targetX = round(clamp(x - offsetX, 0, 100))
+                const targetY = round(clamp(y - offsetY, 0, 100))
+                const existing = getElement(design, target.id)
+                if (existing && (existing.x !== targetX || existing.y !== targetY)) {
+                    onPatch(target.id, {
+                        x: targetX,
+                        y: targetY,
+                    })
+                }
                 break
             }
-            case "signatory":
-                onUpdate((current) => moveSignatory(current, target.id, round(clamp(x, 0, 100)), round(clamp(y, 0, 100))))
+            case "signatory": {
+                const existing = design.signatories.find((s) => s.id === target.id)
+                if (!existing || existing.x !== nextX || existing.y !== nextY) {
+                    onUpdate((current) => moveSignatory(current, target.id, nextX, nextY))
+                }
                 break
-            case "signature":
-                onUpdate((current) =>
-                    patchSignatureArt(current, target.id, { dx: round(clamp(x, -100, 100)), dy: round(clamp(y, -100, 100)) })
-                )
+            }
+            case "signature": {
+                const signX = round(clamp(x, -100, 100))
+                const signY = round(clamp(y, -100, 100))
+                const existing = design.signatories.find((s) => s.id === target.id)
+                if (!existing || existing.signature.dx !== signX || existing.signature.dy !== signY) {
+                    onUpdate((current) =>
+                        patchSignatureArt(current, target.id, { dx: signX, dy: signY })
+                    )
+                }
                 break
-            case "logo":
-                onUpdate((current) => patchLogo(current, target.id, { x: round(clamp(x, 0, 100)), y: round(clamp(y, 0, 100)) }))
+            }
+            case "logo": {
+                const existing = design.logos.find((l) => l.id === target.id)
+                if (!existing || existing.x !== nextX || existing.y !== nextY) {
+                    onUpdate((current) => patchLogo(current, target.id, { x: nextX, y: nextY }))
+                }
                 break
+            }
         }
     }
 
@@ -381,26 +405,40 @@ export function PreviewStage({
                 // Scale text and its wrap width together so the whole block grows or shrinks as one object.
                 const size = clamp(startSize * factor, limits.min, limits.max)
                 const ratio = size / startSize
-                onPatch(target.id, {
-                    size: round2(size),
-                    maxWidth: round2(clamp(startMaxWidth * ratio, MIN_MAX_WIDTH, 100)),
-                })
+                const nextSize = round2(size)
+                const nextMaxWidth = round2(clamp(startMaxWidth * ratio, MIN_MAX_WIDTH, 100))
+                const existing = getElement(design, target.id)
+                if (existing && (existing.size !== nextSize || existing.maxWidth !== nextMaxWidth)) {
+                    onPatch(target.id, {
+                        size: nextSize,
+                        maxWidth: nextMaxWidth,
+                    })
+                }
                 break
             }
             case "signature": {
                 const size = clamp(startSize * factor, SIGNATURE_SIZE_LIMITS.min, SIGNATURE_SIZE_LIMITS.max)
                 const ratio = size / startSize
-                onUpdate((current) =>
-                    patchSignatureArt(current, target.id, {
-                        size: round2(size),
-                        maxWidth: round2(clamp(startMaxWidth * ratio, MIN_MAX_WIDTH, 100)),
-                    })
-                )
+                const nextSize = round2(size)
+                const nextMaxWidth = round2(clamp(startMaxWidth * ratio, MIN_MAX_WIDTH, 100))
+                const existing = design.signatories.find((s) => s.id === target.id)?.signature
+                if (!existing || existing.size !== nextSize || existing.maxWidth !== nextMaxWidth) {
+                    onUpdate((current) =>
+                        patchSignatureArt(current, target.id, {
+                            size: nextSize,
+                            maxWidth: nextMaxWidth,
+                        })
+                    )
+                }
                 break
             }
             case "logo": {
                 const width = clamp(startSize * factor, LOGO_WIDTH_LIMITS.min, LOGO_WIDTH_LIMITS.max)
-                onUpdate((current) => patchLogo(current, target.id, { width: round2(width) }))
+                const nextWidth = round2(width)
+                const existing = design.logos.find((l) => l.id === target.id)
+                if (!existing || existing.width !== nextWidth) {
+                    onUpdate((current) => patchLogo(current, target.id, { width: nextWidth }))
+                }
                 break
             }
             case "signatory":
@@ -414,6 +452,12 @@ export function PreviewStage({
         if (!active || !rect || rect.width === 0 || rect.height === 0) return
 
         if (active.kind === "move") {
+            if (active.lastClientX === event.clientX && active.lastClientY === event.clientY) {
+                return
+            }
+            active.lastClientX = event.clientX
+            active.lastClientY = event.clientY
+
             const shiftX = ((event.clientX - active.startX) / rect.width) * 100
             const shiftY = ((event.clientY - active.startY) / rect.height) * 100
             let x = active.originX + shiftX
@@ -443,11 +487,20 @@ export function PreviewStage({
             applyMove(active.target, x, y, snapped ? round2 : round1)
         } else if (active.kind === "scale") {
             const distance = Math.hypot(event.clientX - active.centerX, event.clientY - active.centerY)
+            if (active.lastDistance !== undefined && Math.abs(active.lastDistance - distance) < 0.2) {
+                return
+            }
+            active.lastDistance = distance
             applyScale(active, distance / active.startDistance)
         } else {
+            if (active.lastClientX === event.clientX) return
+            active.lastClientX = event.clientX
             const delta = ((event.clientX - active.startX) / rect.width) * 100
-            const maxWidth = active.startMaxWidth + active.direction * delta * active.factor
-            onPatch(active.id, { maxWidth: round1(clamp(maxWidth, MIN_WRAP_WIDTH, 100)) })
+            const maxWidth = round1(clamp(active.startMaxWidth + active.direction * delta * active.factor, MIN_WRAP_WIDTH, 100))
+            const existing = getElement(design, active.id)
+            if (existing && existing.maxWidth !== maxWidth) {
+                onPatch(active.id, { maxWidth })
+            }
         }
     }
 

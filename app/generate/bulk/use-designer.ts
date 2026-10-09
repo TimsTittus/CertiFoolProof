@@ -16,6 +16,7 @@ import {
     applyPageSize,
     createDefaultDesign,
     designFontSpecs,
+    designImageSources,
     loadDesignFonts,
     loadDesignImages,
     patchElement,
@@ -556,6 +557,7 @@ export function useDesigner(options: DesignerOptions): Designer {
         }
     }, [fontSpecs])
 
+    const imageSources = designImageSources(design).join("|")
     useEffect(() => {
         let cancelled = false
         void loadDesignImages(designRef.current).then((loaded) => {
@@ -564,7 +566,7 @@ export function useDesigner(options: DesignerOptions): Designer {
         return () => {
             cancelled = true
         }
-    }, [design.signatories, design.logos])
+    }, [imageSources])
 
     // Autosave shortly after each change, and once more as the page is left so nothing is lost.
     useEffect(() => {

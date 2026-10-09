@@ -16,7 +16,12 @@ export interface QRCodeOptions {
 /**
  * Default base URL for verification
  */
-const DEFAULT_BASE_URL = process.env.AUTH_URL || "http://localhost:3000"
+const DEFAULT_BASE_URL =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.BETTER_AUTH_URL ||
+    process.env.AUTH_URL ||
+    process.env.NEXTAUTH_URL ||
+    "http://localhost:3000"
 
 /**
  * Generates a verification URL for a certificate.

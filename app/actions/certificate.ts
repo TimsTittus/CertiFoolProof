@@ -77,7 +77,9 @@ export async function createCertificate(
         // Generate unique certificate ID
         const certificateId = generateCertificateId()
         const issuedAt = new Date()
+        issuedAt.setMilliseconds(0)
         const expiresAt = input.expiresAt ? new Date(input.expiresAt) : null
+        if (expiresAt) expiresAt.setMilliseconds(0)
 
         // Generate hash for integrity verification
         const dataHash = hashCertificateData({

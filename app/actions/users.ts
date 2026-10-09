@@ -3,7 +3,7 @@
 import { auth } from "@/auth"
 import { headers } from "next/headers"
 import { db } from "@/db"
-import { user as userTable } from "@/db/schema"
+import { user as userTable, account as accountTable } from "@/db/schema"
 import bcrypt from "bcryptjs"
 import { revalidatePath } from "next/cache"
 import { eq } from "drizzle-orm"
@@ -17,7 +17,6 @@ async function requireAdmin() {
     }
     return session.user
 }
-
 
 export interface CreateUserInput {
     name: string
@@ -49,17 +48,27 @@ export async function createUser(input: CreateUserInput): Promise<CreateUserResu
         })
         if (existing) return { success: false, error: "A user with this email already exists" }
 
+        const userId = crypto.randomUUID()
         const hashedPassword = await bcrypt.hash(input.password, 10)
 
-        // Add phone as it is not null in schema
-        await db.insert(userTable).values({
-            id: crypto.randomUUID(),
-            name: input.name.trim(),
-            email: input.email.trim().toLowerCase(),
-            password: hashedPassword,
-            role: input.role,
-            department: input.department?.trim() || null,
-            phone: "0000000000", // Default as it's not null in schema
+        await db.transaction(async (tx) => {
+            await tx.insert(userTable).values({
+                id: userId,
+                name: input.name.trim(),
+                email: input.email.trim().toLowerCase(),
+                password: hashedPassword,
+                role: input.role,
+                department: input.department?.trim() || null,
+                phone: "0000000000",
+            })
+
+            await tx.insert(accountTable).values({
+                id: crypto.randomUUID(),
+                accountId: userId,
+                providerId: "credential",
+                userId,
+                password: hashedPassword,
+            })
         })
 
         console.log(`[ADMIN] ${admin.email} created user: ${input.email} (${input.role})`)

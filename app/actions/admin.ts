@@ -4,7 +4,8 @@ import { auth } from "@/auth"
 import { headers } from "next/headers"
 import { db } from "@/db"
 import { user as userTable, certificate as certificateTable, verificationLog as verificationLogTable } from "@/db/schema"
-import { count, eq, gte, desc } from "drizzle-orm"
+import { count, eq, gte, desc, or } from "drizzle-orm"
+import { revalidatePath } from "next/cache"
 
 export interface DashboardStats {
     totalUsers: number
@@ -203,10 +204,20 @@ export async function getVerificationLogs() {
 export async function revokeCertificate(certificateId: string) {
     try {
         await requireAdmin()
-        return await db.update(certificateTable)
+        const [revoked] = await db.update(certificateTable)
             .set({ status: "REVOKED" })
-            .where(eq(certificateTable.id, certificateId))
+            .where(or(eq(certificateTable.id, certificateId), eq(certificateTable.certificateId, certificateId)))
             .returning()
+
+        revalidatePath("/admin")
+        revalidatePath("/admin/certificates")
+        revalidatePath("/dashboard")
+        revalidatePath("/dashboard/certificates")
+        if (revoked?.certificateId) {
+            revalidatePath(`/verify/${revoked.certificateId}`)
+        }
+
+        return revoked ? [revoked] : []
     } catch (error) {
         console.error("[ADMIN] Failed to revoke certificate:", error)
         throw new Error("Failed to revoke certificate. Database may be unreachable.")

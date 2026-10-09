@@ -11,6 +11,12 @@ export interface CertificateHashData {
     description?: string | null
 }
 
+function toIsoString(date: Date | string | null | undefined): string {
+    if (!date) return ""
+    const d = date instanceof Date ? date : new Date(date)
+    return isNaN(d.getTime()) ? "" : d.toISOString()
+}
+
 export function hashCertificateData(data: CertificateHashData): string {
     const canonicalData = [
         data.certificateId,
@@ -18,8 +24,8 @@ export function hashCertificateData(data: CertificateHashData): string {
         data.recipientEmail.trim().toLowerCase(),
         data.title.trim(),
         data.issuerId,
-        data.issuedAt.toISOString(),
-        data.expiresAt?.toISOString() ?? "",
+        toIsoString(data.issuedAt),
+        toIsoString(data.expiresAt),
         data.description?.trim() ?? "",
     ].join("|")
 
@@ -33,7 +39,20 @@ export function verifyCertificateHash(
     expectedHash: string
 ): boolean {
     const computedHash = hashCertificateData(data)
-    return computedHash === expectedHash
+    if (computedHash === expectedHash) return true
+
+    // Check with millisecond-truncated timestamps in case DB adapter stripped sub-seconds
+    const issuedZero = new Date(data.issuedAt)
+    issuedZero.setMilliseconds(0)
+    const expiresZero = data.expiresAt ? new Date(data.expiresAt) : null
+    if (expiresZero) expiresZero.setMilliseconds(0)
+
+    const fallbackHash = hashCertificateData({
+        ...data,
+        issuedAt: issuedZero,
+        expiresAt: expiresZero,
+    })
+    return fallbackHash === expectedHash
 }
 
 export function generateSecureRandom(length: number = 32): string {
