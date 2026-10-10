@@ -223,9 +223,16 @@ const COLOR_SPACES: Record<number, string> = { 1: "/DeviceGray", 3: "/DeviceRGB"
 /** Numbers in a PDF may not be written in exponent notation. */
 const num = (value: number) => (Math.round(value * 100) / 100).toString()
 
-/** Text inside a PDF string, with the three characters that would end it escaped. */
 function pdfString(value: string): string {
-    return value.replace(/[^\x20-\x7e]/g, " ").replace(/([\\()])/g, "\\$1").slice(0, 200)
+    const trimmed = value.slice(0, 200)
+    if (/^[\x20-\x7e]*$/.test(trimmed)) {
+        return `(${trimmed.replace(/([\\()])/g, "\\$1")})`
+    }
+    let hex = "FEFF"
+    for (let i = 0; i < trimmed.length; i++) {
+        hex += trimmed.charCodeAt(i).toString(16).padStart(4, "0").toUpperCase()
+    }
+    return `<${hex}>`
 }
 
 function pdfDate(date: Date): string {
@@ -266,6 +273,13 @@ function buildPdf(pages: PdfPage[], options: PdfOptions): Uint8Array[] {
         write("endobj\n")
     }
 
+    const streamObject = (id: number, dict: string, data: Uint8Array) => {
+        offsets.set(id, offset)
+        write(`${id} 0 obj\n${dict}\nstream\n`)
+        push(data)
+        write("\nendstream\nendobj\n")
+    }
+
     const pageId = (index: number) => 3 + index * 3
     const contentId = (index: number) => 4 + index * 3
     const imageId = (index: number) => 5 + index * 3
@@ -291,28 +305,25 @@ function buildPdf(pages: PdfPage[], options: PdfOptions): Uint8Array[] {
         )
 
         // Draw the picture over the whole page: scale it up from the unit square at the origin.
-        const content = `q\n${num(page.width)} 0 0 ${num(page.height)} 0 0 cm\n/Im0 Do\nQ\n`
+        const content = `q\n${num(page.width)} 0 0 ${num(page.height)} 0 0 cm\n/Im0 Do\nQ`
         const contentBytes = encoder.encode(content)
-        openObject(contentId(index), `<< /Length ${contentBytes.length} >>\nstream`)
-        push(contentBytes)
-        write("endstream\nendobj\n")
+        streamObject(contentId(index), `<< /Length ${contentBytes.length} >>`, contentBytes)
 
         const { image } = page
         const filter = image.kind === "jpeg" ? "/DCTDecode" : "/FlateDecode"
         const colorSpace = COLOR_SPACES[image.components] ?? "/DeviceRGB"
-        openObject(
+        streamObject(
             imageId(index),
             `<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height}` +
-            ` /ColorSpace ${colorSpace} /BitsPerComponent 8 /Filter ${filter} /Length ${image.data.length} >>\nstream`
+            ` /ColorSpace ${colorSpace} /BitsPerComponent 8 /Filter ${filter} /Length ${image.data.length} >>`,
+            image.data
         )
-        push(image.data)
-        write("\nendstream\nendobj\n")
     })
 
     object(
         infoId,
         `<< /Producer (CertiFoolProof) /Creator (CertiFoolProof)` +
-        `${options.title ? ` /Title (${pdfString(options.title)})` : ""}` +
+        `${options.title ? ` /Title ${pdfString(options.title)}` : ""}` +
         ` /CreationDate (${pdfDate(options.createdAt ?? new Date())}) >>`
     )
 
@@ -333,7 +344,7 @@ function buildPdf(pages: PdfPage[], options: PdfOptions): Uint8Array[] {
  * whole page box, so a page is exactly the certificate and nothing else.
  */
 export function createPdf(pages: PdfPage[], options: PdfOptions = {}): Blob {
-    return new Blob(buildPdf(pages, options), { type: "application/pdf" })
+    return new Blob(buildPdf(pages, options) as BlobPart[], { type: "application/pdf" })
 }
 
 /** The same file as raw bytes, for a PDF that goes into a ZIP rather than straight to the browser. */

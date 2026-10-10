@@ -67,8 +67,20 @@ export async function verifyCertificate(
             certificate.dataHash
         )
 
-        const isExpired = certificate.expiresAt && new Date() > certificate.expiresAt
+        const isExpired = Boolean(certificate.expiresAt && new Date() > certificate.expiresAt)
+        const isRevoked = certificate.status === "REVOKED"
         const isActive = certificate.status === "ACTIVE" && !isExpired
+
+        const finalStatus = isRevoked ? "REVOKED" : (isExpired ? "EXPIRED" : certificate.status)
+
+        let errorMessage: string | undefined = undefined
+        if (!isHashValid) {
+            errorMessage = "Certificate integrity check failed (potential tampering detected)"
+        } else if (isRevoked) {
+            errorMessage = "This certificate has been revoked by the issuing authority"
+        } else if (isExpired) {
+            errorMessage = "This certificate has expired"
+        }
 
         const headersList = await headers()
         const ipAddress = headersList.get("x-forwarded-for") || headersList.get("x-real-ip") || null
@@ -95,6 +107,7 @@ export async function verifyCertificate(
         return {
             success: true,
             valid: isHashValid && isActive,
+            error: isHashValid && isActive ? undefined : errorMessage,
             certificate: {
                 certificateId: certificate.certificateId,
                 recipientName: certificate.recipientName,
@@ -103,7 +116,7 @@ export async function verifyCertificate(
                 description: certificate.description,
                 issuedAt: certificate.issuedAt,
                 expiresAt: certificate.expiresAt,
-                status: isExpired ? "EXPIRED" : certificate.status,
+                status: finalStatus,
                 issuerName: certificate.issuer.name,
                 issuerDepartment: certificate.issuer.department,
                 verificationCount: certificate.verificationCount + 1,

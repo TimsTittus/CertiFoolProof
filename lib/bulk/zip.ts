@@ -122,5 +122,5 @@ export function createZip(entries: ZipEntry[], modifiedAt: Date = new Date()): B
     eocdView.setUint32(16, offset, true) // central directory offset
     eocdView.setUint16(20, 0, true) // comment length
 
-    return new Blob([...fileChunks, ...centralChunks, eocd], { type: "application/zip" })
+    return new Blob([...fileChunks, ...centralChunks, eocd] as BlobPart[], { type: "application/zip" })
 }
