@@ -14,6 +14,7 @@ export function AddUserForm() {
     const [password, setPassword] = useState("")
     const [role, setRole] = useState<"FACULTY" | "CLUB">("FACULTY")
     const [department, setDepartment] = useState("")
+    const [phone, setPhone] = useState("")
 
     const resetForm = () => {
         setName("")
@@ -21,6 +22,7 @@ export function AddUserForm() {
         setPassword("")
         setRole("FACULTY")
         setDepartment("")
+        setPhone("")
         setError("")
         setSuccess("")
     }
@@ -37,6 +39,7 @@ export function AddUserForm() {
             password,
             role,
             department: department || undefined,
+            phone: phone.trim() || undefined,
         }
 
         const result = await createUser(input)
@@ -122,7 +125,7 @@ export function AddUserForm() {
                     </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                         <label className="block text-xs font-medium text-gray-400 mb-1.5">Password *</label>
                         <input
@@ -147,6 +150,20 @@ export function AddUserForm() {
                             <option value="FACULTY">Faculty</option>
                             <option value="CLUB">Club</option>
                         </select>
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-xs font-medium text-gray-400 mb-1.5">Phone Number</label>
+                        <input
+                            type="tel"
+                            value={phone}
+                            onChange={(e) => setPhone(e.target.value)}
+                            placeholder="+1234567890"
+                            disabled={loading}
+                            className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all disabled:opacity-50"
+                        />
                     </div>
                     <div>
                         <label className="block text-xs font-medium text-gray-400 mb-1.5">Department</label>

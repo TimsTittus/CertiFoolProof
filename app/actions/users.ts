@@ -24,6 +24,7 @@ export interface CreateUserInput {
     password: string
     role: "FACULTY" | "CLUB"
     department?: string
+    phone?: string
 }
 
 export interface CreateUserResult {
@@ -43,6 +44,14 @@ export async function createUser(input: CreateUserInput): Promise<CreateUserResu
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
         if (!emailRegex.test(input.email)) return { success: false, error: "Invalid email format" }
 
+        const phone = input.phone?.trim()
+        if (phone) {
+            const phoneRegex = /^[+]?[(]?[0-9]{1,4}[)]?[-\s./0-9]{6,15}$/
+            if (!phoneRegex.test(phone)) {
+                return { success: false, error: "Invalid phone number format" }
+            }
+        }
+
         const existing = await db.query.user.findFirst({
             where: eq(userTable.email, input.email.trim().toLowerCase())
         })
@@ -59,7 +68,7 @@ export async function createUser(input: CreateUserInput): Promise<CreateUserResu
                 password: hashedPassword,
                 role: input.role,
                 department: input.department?.trim() || null,
-                phone: "0000000000",
+                phone: phone || "0000000000",
             })
 
             await tx.insert(accountTable).values({
