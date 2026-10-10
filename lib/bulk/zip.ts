@@ -46,6 +46,9 @@ function toDosTime(date: Date): { time: number; date: number } {
 /** Hard ceiling imposed by the 16-bit entry counters in the ZIP end-of-central-directory record. */
 export const ZIP_MAX_ENTRIES = 65535
 
+/** Hard ceiling imposed by the 32-bit offset/size fields in standard ZIP format without Zip64 (4 GB - 1 byte). */
+export const ZIP_MAX_SIZE_BYTES = 0xffffffff
+
 /** Builds the archive as a Blob, avoiding one contiguous buffer for the whole archive. */
 export function createZip(entries: ZipEntry[], modifiedAt: Date = new Date()): Blob {
     if (entries.length > ZIP_MAX_ENTRIES) {
@@ -63,6 +66,10 @@ export function createZip(entries: ZipEntry[], modifiedAt: Date = new Date()): B
     for (const entry of entries) {
         const nameBytes = encoder.encode(entry.name)
         const size = entry.data.length
+        if (size > ZIP_MAX_SIZE_BYTES) {
+            throw new Error(`File "${entry.name}" exceeds the 4 GB limit for standard ZIP archives.`)
+        }
+
         const crc = crc32(entry.data)
 
         // --- Local file header (30 bytes + name) ---
@@ -80,6 +87,12 @@ export function createZip(entries: ZipEntry[], modifiedAt: Date = new Date()): B
         localView.setUint16(26, nameBytes.length, true)
         localView.setUint16(28, 0, true) // extra field length
         local.set(nameBytes, 30)
+
+        if (offset + local.length + size > ZIP_MAX_SIZE_BYTES) {
+            throw new Error(
+                "The ZIP archive exceeds the 4 GB limit for standard ZIP format. Export in smaller batches."
+            )
+        }
 
         fileChunks.push(local, entry.data)
 
@@ -108,6 +121,12 @@ export function createZip(entries: ZipEntry[], modifiedAt: Date = new Date()): B
         centralChunks.push(central)
         centralSize += central.length
         offset += local.length + size
+    }
+
+    if (centralSize > ZIP_MAX_SIZE_BYTES || offset + centralSize + 22 > ZIP_MAX_SIZE_BYTES) {
+        throw new Error(
+            "The ZIP archive exceeds the 4 GB limit for standard ZIP format. Export in smaller batches."
+        )
     }
 
     // --- End of central directory record ---
