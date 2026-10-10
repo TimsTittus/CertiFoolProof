@@ -79,7 +79,7 @@ export default function VerifyPage() {
                                 value={certificateId}
                                 onChange={(e) => setCertificateId(e.target.value.toUpperCase())}
                                 placeholder="CFP-2026-XXXXX"
-                                className="w-full px-4 py-4 border-3 border-black bg-neo-mint/10 text-black placeholder-black/30 focus:outline-none focus:bg-white focus:shadow-neo transition-all font-black text-center text-xl sm:text-2xl tracking-widest lowercase"
+                                className="w-full px-4 py-4 border-3 border-black bg-neo-mint/10 text-black placeholder-black/30 focus:outline-none focus:bg-white focus:shadow-neo transition-all font-black text-center text-xl sm:text-2xl tracking-widest uppercase"
                             />
                         </div>
 
