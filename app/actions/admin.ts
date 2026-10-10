@@ -79,8 +79,8 @@ export async function getAdminDashboardStats(): Promise<DashboardStats> {
             }),
         ])
 
-        const sixMonthsAgo = new Date()
-        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6)
+        const now = new Date()
+        const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1, 0, 0, 0, 0)
 
         const certsByMonth = await db.select({ createdAt: certificateTable.createdAt })
             .from(certificateTable)
@@ -88,8 +88,7 @@ export async function getAdminDashboardStats(): Promise<DashboardStats> {
 
         const monthCounts: Record<string, number> = {}
         for (let i = 5; i >= 0; i--) {
-            const d = new Date()
-            d.setMonth(d.getMonth() - i)
+            const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
             const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
             monthCounts[key] = 0
         }
