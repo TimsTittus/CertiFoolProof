@@ -47,12 +47,44 @@ export function verifyCertificateHash(
     const expiresZero = data.expiresAt ? new Date(data.expiresAt) : null
     if (expiresZero) expiresZero.setMilliseconds(0)
 
-    const fallbackHash = hashCertificateData({
-        ...data,
-        issuedAt: issuedZero,
-        expiresAt: expiresZero,
-    })
-    return fallbackHash === expectedHash
+    if (
+        hashCertificateData({
+            ...data,
+            issuedAt: issuedZero,
+            expiresAt: expiresZero,
+        }) === expectedHash
+    ) {
+        return true
+    }
+
+    // Timezone compensation fallback: handles environments where timestamps
+    // were stored without timezone or parsed with local timezone offset shifts.
+    const localOffsetMs = data.issuedAt.getTimezoneOffset() * 60 * 1000
+    const offsets = localOffsetMs !== 0 ? [localOffsetMs, -localOffsetMs] : []
+
+    for (const offset of offsets) {
+        for (const zeroMs of [false, true]) {
+            const candIssued = new Date(data.issuedAt.getTime() + offset)
+            if (zeroMs) candIssued.setMilliseconds(0)
+
+            const candExpires = data.expiresAt
+                ? new Date(data.expiresAt.getTime() + offset)
+                : null
+            if (candExpires && zeroMs) candExpires.setMilliseconds(0)
+
+            if (
+                hashCertificateData({
+                    ...data,
+                    issuedAt: candIssued,
+                    expiresAt: candExpires,
+                }) === expectedHash
+            ) {
+                return true
+            }
+        }
+    }
+
+    return false
 }
 
 export function generateSecureRandom(length: number = 32): string {

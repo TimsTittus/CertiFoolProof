@@ -107,21 +107,21 @@ export const certificate = pgTable(
         recipientEmail: text("recipient_email").notNull(),
         title: text("title").notNull(),
         description: text("description"),
-        issuedAt: timestamp("issued_at").defaultNow().notNull(),
-        expiresAt: timestamp("expires_at"),
+        issuedAt: timestamp("issued_at", { withTimezone: true }).defaultNow().notNull(),
+        expiresAt: timestamp("expires_at", { withTimezone: true }),
         dataHash: text("data_hash").notNull(),
         qrCodeData: text("qr_code_data").notNull(),
         status: text("status").default("ACTIVE").notNull(),
         issuerId: text("issuer_id")
             .notNull()
             .references(() => user.id, { onDelete: "restrict" }),
-        createdAt: timestamp("created_at").defaultNow().notNull(),
-        updatedAt: timestamp("updated_at")
+        createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+        updatedAt: timestamp("updated_at", { withTimezone: true })
             .defaultNow()
             .$onUpdate(() => new Date())
             .notNull(),
         verificationCount: integer("verification_count").default(0).notNull(),
-        lastVerifiedAt: timestamp("last_verified_at"),
+        lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
     },
     (table) => [
         index("certificate_certificateId_idx").on(table.certificateId),
@@ -144,7 +144,7 @@ export const verificationLog = pgTable(
     {
         id: text("id").primaryKey(),
         certificateId: text("certificate_id").notNull(),
-        verifiedAt: timestamp("verified_at").defaultNow().notNull(),
+        verifiedAt: timestamp("verified_at", { withTimezone: true }).defaultNow().notNull(),
         ipAddress: text("ip_address"),
         userAgent: text("user_agent"),
         success: boolean("success").default(true).notNull(),
