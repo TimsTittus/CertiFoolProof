@@ -4,7 +4,7 @@ import { auth } from "@/auth"
 import { headers } from "next/headers"
 import { db } from "@/db"
 import { user as userTable, account as accountTable } from "@/db/schema"
-import bcrypt from "bcryptjs"
+import { hashPassword } from "better-auth/crypto"
 import { revalidatePath } from "next/cache"
 import { eq } from "drizzle-orm"
 
@@ -49,7 +49,7 @@ export async function createUser(input: CreateUserInput): Promise<CreateUserResu
         if (existing) return { success: false, error: "A user with this email already exists" }
 
         const userId = crypto.randomUUID()
-        const hashedPassword = await bcrypt.hash(input.password, 10)
+        const hashedPassword = await hashPassword(input.password)
 
         await db.transaction(async (tx) => {
             await tx.insert(userTable).values({
