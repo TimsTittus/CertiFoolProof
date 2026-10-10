@@ -17,9 +17,18 @@ function detectDelimiter(text: string): string {
     for (let i = 0; i < text.length && line < 5; i++) {
         const char = text[i]
         if (char === '"') {
-            inQuotes = !inQuotes
-        } else if (!inQuotes && (char === "\n" || char === "\r")) {
+            if (inQuotes && text[i + 1] === '"') {
+                i++ // Skip escaped quote inside quotes
+            } else {
+                inQuotes = !inQuotes
+            }
+        } else if (!inQuotes && char === "\n") {
             line++
+        } else if (!inQuotes && char === "\r") {
+            // Only count standalone CR; if followed by LF, let LF count the line
+            if (text[i + 1] !== "\n") {
+                line++
+            }
         } else if (!inQuotes && counts.has(char)) {
             counts.set(char, (counts.get(char) ?? 0) + 1)
         }
